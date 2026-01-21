@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+venv/
+.venv/
+
+# PyInstaller
+*.manifest
+*.spec
+build/
+dist/
+
+# VS Code
+.vscode/
+
+# Local configuration
+config.json
