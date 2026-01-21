@@ -371,11 +371,29 @@ class CyberScribeApp:
 
     def paste_text(self, text):
         try:
+            log("Attempting to paste text...")
             pyperclip.copy(text)
-            time.sleep(0.1) 
-            pyautogui.hotkey('ctrl', 'v')
+            # Give clipboard a moment to settle
+            time.sleep(0.3) 
+            
+            # Use pynput for more reliable keystrokes
+            from pynput.keyboard import Controller, Key
+            keyboard_controller = Controller()
+            
+            # Press Ctrl+V
+            with keyboard_controller.pressed(Key.ctrl):
+                keyboard_controller.press('v')
+                keyboard_controller.release('v')
+                
+            log("Paste command sent.")
         except Exception as e:
             log_error(f"Error pasting text: {e}")
+            # Fallback to pyautogui if pynput fails
+            try:
+                log("Retrying with pyautogui...")
+                pyautogui.hotkey('ctrl', 'v')
+            except Exception as e2:
+                log_error(f"Fallback paste failed: {e2}")
 
     # --- GUI & MAIN LOOP ---
 
