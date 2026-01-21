@@ -34,3 +34,17 @@ To compile the application into a standalone `.exe`:
 3.  Press **F8** (or your configured hotkey) to start recording.
 4.  Press **F8** again to stop.
 5.  The text will be transcribed and pasted automatically.
+
+## Model Comparison
+
+Choose the right model for your needs:
+
+| Model | Speed | Accuracy | Recommended Use |
+|-------|-------|----------|-----------------|
+| **tiny** | ⚡⚡⚡ Very Fast | ⭐⭐ Basic | Quick tests |
+| **base** | ⚡⚡ Fast | ⭐⭐⭐ Good | **Daily use** ✅ (Default) |
+| **small** | ⚡ Medium | ⭐⭐⭐⭐ Very Good | Quality/Speed balance |
+| **medium** | 🐌 Slow | ⭐⭐⭐⭐⭐ Excellent | Critical transcription |
+| **large-v3** | 🐌🐌 Very Slow | ⭐⭐⭐⭐⭐ Maximum | Professional only |
+
+> **Note**: The **base** model offers the best balance for everyday use. Use **medium** or **large-v3** only when maximum accuracy is required and you can accept longer processing times.
