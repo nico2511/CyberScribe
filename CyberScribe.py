@@ -196,6 +196,7 @@ class Transcriber:
         self.config = config
         self.model = None
         self.loading = False
+        self.loaded_event = threading.Event()
         threading.Thread(target=self._load_model, daemon=True).start()
 
     def _load_model(self):
@@ -207,6 +208,7 @@ class Transcriber:
             log(f"Loading Whisper Model ({model_size})...")
             self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
             log("Model loaded.")
+            self.loaded_event.set()
         except Exception as e:
             log_error(f"Error loading model: {e}")
             self.model = None
@@ -214,12 +216,13 @@ class Transcriber:
 
     def transcribe(self, audio_path):
         if not self.model:
-            if self.loading:
-                return "Erreur: Modèle en cours de chargement..."
-            else:
-                self._load_model()
-                if not self.model: 
-                    return "Erreur: Modèle non chargé."
+            log("Model not ready. Waiting for load to complete...")
+            # Wait up to 120 seconds for the model to load
+            if not self.loaded_event.wait(timeout=120):
+                return "Erreur: Le modèle met trop de temps à charger."
+            
+            if not self.model:
+                return "Erreur: Échec du chargement du modèle."
         
         try:
             lang = self.config.get("language")
@@ -319,10 +322,13 @@ class CyberScribeApp:
             log(f"Audio captured: {audio_path}")
             threading.Thread(target=self.process_audio, args=(audio_path,), daemon=True).start()
 
-    def update_tray_icon(self, recording):
+    def update_tray_icon(self, recording=False, loading=False):
         if not self.tray_icon: return
         try:
-            if recording:
+            if loading:
+                self.tray_icon.icon = self.icon_gray
+                self.tray_icon.title = "CyberScribe - Chargement du modèle..."
+            elif recording:
                 self.tray_icon.icon = self.icon_red
                 self.tray_icon.title = "CyberScribe - Enregistrement..."
             else:
@@ -529,10 +535,26 @@ class CyberScribeApp:
         tray_thread = threading.Thread(target=self.run_tray, daemon=True)
         tray_thread.start()
         
+        # Check for initial loading
+        self.update_tray_icon(loading=True)
+        
         while True:
             try:
-                msg = self.queue.get(timeout=0.5)
-                
+                # Poll queue but also check if model just finished loading
+                try:
+                    msg = self.queue.get(timeout=0.5)
+                except queue.Empty:
+                    # If model just finished loading and we haven't updated icon yet
+                    if self.transcriber.model and not self.transcriber.loading:
+                        # Ensure we switch to 'Ready' state once if we were in loading state
+                        # Simple way: just update to Ready if not recording
+                        if not self.is_recording:
+                             self.update_tray_icon(loading=False)
+                    
+                    if not tray_thread.is_alive():
+                        break
+                    continue
+
                 if msg == "settings":
                     self.open_settings_window()
                 elif msg == "toggle_recording":
@@ -540,21 +562,21 @@ class CyberScribeApp:
                 elif msg == "quit":
                     self.stop_app()
                     break
-            except queue.Empty:
-                if not tray_thread.is_alive():
-                    break
-                continue
             except KeyboardInterrupt:
                 break
 
     def stop_app(self):
         log("Stopping...")
-        self.recorder.terminate()
-        if self.hotkey_listener:
-            self.hotkey_listener.stop()
-        if self.tray_icon:
-            self.tray_icon.stop()
-        sys.exit(0)
+        try:
+            self.recorder.terminate()
+            if self.hotkey_listener:
+                self.hotkey_listener.stop()
+            if self.tray_icon:
+                self.tray_icon.stop()
+        except: pass
+        
+        log("Force exiting...")
+        os._exit(0)
 
 if __name__ == "__main__":
     app = CyberScribeApp()
