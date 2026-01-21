@@ -207,32 +207,50 @@ class Transcriber:
             compute_type = self.config.get("compute_type")
             log(f"Loading Whisper Model ({model_size})...")
             self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
-            log("Model loaded.")
-            self.loaded_event.set()
+            log("Model loaded successfully.")
         except Exception as e:
             log_error(f"Error loading model: {e}")
             self.model = None
-        self.loading = False
+        finally:
+            self.loaded_event.set()
+            self.loading = False
 
     def transcribe(self, audio_path):
         if not self.model:
+            if not self.loading and not self.loaded_event.is_set():
+                 # Should not happen if strictly following logic, but safety check
+                 return "Erreur: Modèle non initialisé."
+
             log("Model not ready. Waiting for load to complete...")
             # Wait up to 120 seconds for the model to load
             if not self.loaded_event.wait(timeout=120):
+                log_error("Timeout waiting for model load.")
                 return "Erreur: Le modèle met trop de temps à charger."
             
             if not self.model:
-                return "Erreur: Échec du chargement du modèle."
+                log_error("Model failed to load.")
+                return "Erreur: Échec du chargement du modèle. Vérifiez les logs."
         
         try:
+            log(f"Starting transcription of {audio_path}...")
             lang = self.config.get("language")
             if lang == "auto":
                 lang = None
             
-            segments, info = self.model.transcribe(audio_path, beam_size=5, language=lang)
+            # Relaxed thresholds to detect more speech
+            segments, info = self.model.transcribe(
+                audio_path, 
+                beam_size=5, 
+                language=lang,
+                condition_on_previous_text=False, # Prevent hallucinations loops
+                no_speech_threshold=0.8,          # Higher = less sensitive to silence (allow more "maybe silence" though)
+                log_prob_threshold=-2.0           # Lower = allow less confident transcriptions
+            )
             text_result = "".join([segment.text for segment in segments]).strip()
+            log(f"Transcription finished: {text_result[:50]}...")
             return text_result
         except Exception as e:
+            log_error(f"Transcription error: {e}")
             return f"Error during transcription: {e}"
 
 # ==================================================================================
