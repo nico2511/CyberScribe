@@ -42,6 +42,11 @@ def create_icon(color, filename):
     img.save(buffered, format="PNG")
     img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
     print(f"ICON_{filename.upper()} = \"{img_str}\"")
+    
+    # Save as ICO for the executable
+    if color == 'gray':
+        img.save("app.ico", format="ICO", sizes=[(64, 64)])
+        print("Generated app.ico")
 
 if __name__ == "__main__":
     create_icon('gray', 'gray')

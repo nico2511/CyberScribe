@@ -24,7 +24,7 @@ To compile the application into a standalone `.exe`:
 
 2.  **Build with PyInstaller**:
     ```bash
-    pyinstaller --noconsole --onefile --noconfirm --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --name "CyberScribe" CyberScribe.py
+    pyinstaller --noconsole --onefile --noconfirm --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --icon "app.ico" --name "CyberScribe" CyberScribe.py
     ```
 
 ## Usage
