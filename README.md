@@ -48,3 +48,9 @@ Choose the right model for your needs:
 | **large-v3** | 🐌🐌 Very Slow | ⭐⭐⭐⭐⭐ Maximum | Professional only |
 
 > **Note**: The **base** model offers the best balance for everyday use. Use **medium** or **large-v3** only when maximum accuracy is required and you can accept longer processing times.
+
+## Support
+
+If you like CyberScribe, consider supporting the project!
+
+**Bitcoin (BTC)**: `bc1qupdqh5z8wv0jr2f9ugd6gpfjdfg5uykxefet32`

@@ -364,7 +364,7 @@ class CyberScribeApp:
         except: pass
 
         if text:
-            log(f"Transcription result: {text}")
+            log(f"Transcription result: [Redacted for security] ({len(text)} chars)")
             self.paste_text(text)
         else:
             log("No transcription result.")
