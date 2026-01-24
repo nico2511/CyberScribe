@@ -53,4 +53,5 @@ Choose the right model for your needs:
 
 If you like CyberScribe, consider supporting the project!
 
-**Bitcoin (BTC)**: `bc1qupdqh5z8wv0jr2f9ugd6gpfjdfg5uykxefet32`
+**Bitcoin (BTC)**: `bc1pt20cczcmvukrny4pru3x2nc522tk2sectlu22d42q2ltyau7t66suh6kqx`
+
