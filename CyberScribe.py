@@ -26,17 +26,53 @@ import tempfile
 import base64
 import queue
 import logging
+import glob
 from io import BytesIO
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-# Configure Logging
-LOG_FILE = "debug_CyberScribe.log"
+# Application directory (works for both script and PyInstaller .exe)
+if getattr(sys, 'frozen', False):
+    APP_DIR = os.path.dirname(sys.executable)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+MODELS_DIR = os.path.join(APP_DIR, "models")
+os.makedirs(MODELS_DIR, exist_ok=True)
+
+# Configure Logging (privacy-conscious: no transcription content logged)
+LOG_FILE = os.path.join(APP_DIR, "debug_CyberScribe.log")
+MAX_LOG_SIZE = 1 * 1024 * 1024  # 1 MB
+
+def _rotate_log():
+    """Purge log file if it exceeds MAX_LOG_SIZE."""
+    try:
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > MAX_LOG_SIZE:
+            os.remove(LOG_FILE)
+    except Exception:
+        pass
+
+_rotate_log()
+
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
+
+def _cleanup_orphan_temp_wav():
+    """Remove orphan .wav files from temp directory left by previous crashes."""
+    try:
+        temp_dir = tempfile.gettempdir()
+        for f in glob.glob(os.path.join(temp_dir, "tmp*.wav")):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+_cleanup_orphan_temp_wav()
 
 def log(msg):
     # Also print to console if available
@@ -78,7 +114,7 @@ def get_icon_image(b64_str):
 # CONFIGURATION
 # ==================================================================================
 
-CONFIG_FILE = "config.json"
+CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 DEFAULT_CONFIG = {
     "hotkey": "F8",
     "language": "fr",
@@ -206,7 +242,7 @@ class Transcriber:
             device = self.config.get("device")
             compute_type = self.config.get("compute_type")
             log(f"Loading Whisper Model ({model_size})...")
-            self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+            self.model = WhisperModel(model_size, device=device, compute_type=compute_type, download_root=MODELS_DIR)
             log("Model loaded successfully.")
         except Exception as e:
             log_error(f"Error loading model: {e}")
@@ -247,7 +283,7 @@ class Transcriber:
                 log_prob_threshold=-2.0           # Lower = allow less confident transcriptions
             )
             text_result = "".join([segment.text for segment in segments]).strip()
-            log(f"Transcription finished: {text_result[:50]}...")
+            log(f"Transcription finished. ({len(text_result)} chars)")
             return text_result
         except Exception as e:
             log_error(f"Transcription error: {e}")
@@ -407,7 +443,7 @@ class CyberScribeApp:
         try:
             root = tk.Tk()
             root.title("CyberScribe Config")
-            root.geometry("460x680")
+            root.geometry("460x760")
             
             # Colors
             C_BG = '#0f172a'       # Dark Slate (Main BG)
@@ -423,7 +459,7 @@ class CyberScribeApp:
             # Center window
             root.update_idletasks()
             width = 460
-            height = 680
+            height = 760
             x = (root.winfo_screenwidth() // 2) - (width // 2)
             y = (root.winfo_screenheight() // 2) - (height // 2)
             root.geometry(f'{width}x{height}+{x}+{y}')
@@ -500,6 +536,15 @@ class CyberScribeApp:
             device_var = tk.StringVar(value=self.config.get("device"))
             device_cb = ttk.Combobox(main_frame, textvariable=device_var, values=["cpu", "cuda"], font=("Consolas", 10))
             device_cb.pack(pady=0)
+
+            # Model Storage Path (read-only info)
+            create_label(">> MODEL STORAGE").pack(pady=(15, 2))
+            create_help_text("Local directory where models are downloaded.").pack(pady=(0, 5))
+            path_var = tk.StringVar(value=MODELS_DIR)
+            path_entry = tk.Entry(main_frame, textvariable=path_var, bg=C_INPUT_BG, fg='#94a3b8',
+                                  font=("Consolas", 9), relief='flat', bd=5, state='readonly',
+                                  readonlybackground=C_INPUT_BG)
+            path_entry.pack(pady=0, fill='x', padx=30)
 
             # Buttons
             def test_rec():
