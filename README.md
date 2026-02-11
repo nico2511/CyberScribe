@@ -7,10 +7,13 @@
 ## Features
 
 - 🎙️ **Offline Transcription**: Powered by Faster-Whisper.
+- 🚀 **Hardware Acceleration**: Support for both **CPU** and **NVIDIA GPU (CUDA)**.
 - 🤖 **Robot Theme**: Custom icons and splash screen.
 - ⌨️ **Global Hotkey**: Toggle recording from anywhere (default F8).
-- 📋 **Auto-Paste**: Automatically pastes transcribed text.
-- ⚙️ **Configurable**: Change models, hotkeys, and language via settings.
+- 🔊 **Audio Feedback**: Audible cues (beeps) when starting and stopping records.
+- 📋 **Auto-Paste**: Automatically pastes transcribed text into your active window.
+- ⚙️ **Configurable**: Change models, hotkeys, processing unit, and language via settings.
+- 🧪 **System Self-Test**: Integrated diagnostic tool to verify your setup.
 
 ## Installation / Compilation
 
@@ -31,9 +34,10 @@ To compile the application into a standalone `.exe`:
 
 1.  Run the executable.
 2.  Wait for the Splash Screen.
-3.  Press **F8** (or your configured hotkey) to start recording.
-4.  Press **F8** again to stop.
+3.  Press **F8** (or your configured hotkey) to start recording. You will hear a **high beep**.
+4.  Press **F8** again to stop. You will hear a **lower beep**.
 5.  The text will be transcribed and pasted automatically.
+6.  Right-click the tray icon to access **Configuration** and run a **Self-Test**.
 
 ## Model Comparison
 
