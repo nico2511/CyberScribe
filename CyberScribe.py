@@ -116,54 +116,90 @@ def get_icon_image(b64_str):
 # ==================================================================================
 
 class PartialOverlay:
-    """A floating, semi-transparent window to show live transcription."""
+    """A high-tech, semi-transparent floating UI for live transcription."""
     def __init__(self):
         self.root = None
         self.label = None
+        self.indicator = None
         self.active = False
+        self.pulse_state = 0
 
     def show(self):
         if self.root: return
-        self.root = tk.Tk()
+        self.root = tk.Toplevel() # Better than tk.Tk() for sub-windows
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
-        self.root.attributes("-alpha", 0.8)
-        self.root.config(bg="#1e293b")
+        self.root.attributes("-alpha", 0.9)
+        
+        # Cyber Colors
+        BG_COLOR = "#0b1120"    # Deep space black
+        ACCENT_COLOR = "#00f2ff" # Electric Cyan
+        
+        self.root.config(bg=ACCENT_COLOR) # Glowing border effect
         
         # Position at the bottom center of the screen
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        w, h = 600, 60
+        w, h = 700, 95
         x = (screen_w - w) // 2
         y = screen_h - h - 100
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
+        # Main containment frame for border effect
+        inner_frame = tk.Frame(self.root, bg=BG_COLOR)
+        inner_frame.pack(fill='both', expand=True, padx=1, pady=1)
+
+        # Header with "REC" indicator
+        header = tk.Frame(inner_frame, bg=BG_COLOR)
+        header.pack(fill='x', padx=15, pady=(8, 2))
+
+        self.indicator = tk.Label(header, text="●", fg="#ff004c", bg=BG_COLOR, font=("Arial", 11, "bold"))
+        self.indicator.pack(side='left')
+        
+        tk.Label(header, text="SYSTEM.LIVE_TRANSCRIPTION", fg="#475569", bg=BG_COLOR, font=("Consolas", 8, "bold"), letterspacing=1).pack(side='left', padx=10)
+        
+        # Transcription Label
         self.label = tk.Label(
-            self.root, 
-            text="...", 
-            font=("Segoe UI", 12, "italic"), 
-            fg="#38bdf8", 
-            bg="#1e293b",
-            wraplength=580
+            inner_frame, 
+            text="STANDING BY...", 
+            font=("Segoe UI Semibold", 14), 
+            fg=ACCENT_COLOR, 
+            bg=BG_COLOR,
+            anchor='center',
+            justify='center',
+            wraplength=660
         )
-        self.label.pack(expand=True, fill='both', padx=10, pady=5)
+        self.label.pack(expand=True, fill='both', padx=20, pady=(0, 10))
+        
         self.active = True
-        
-        # Run in a small thread-friendly way
-        def _loop():
-            if self.active and self.root:
-                try:
-                    self.root.update()
-                    self.root.after(100, _loop)
-                except: pass
-        
-        self.root.after(100, _loop)
+        self._animate_pulse()
+
+    def _animate_pulse(self):
+        """Simple pulsing effect for the REC dot."""
+        if not self.active or not self.root: return
+        colors = ["#ef4444", "#7f1d1d", "#ef4444", "#991b1b"]
+        self.pulse_state = (self.pulse_state + 1) % len(colors)
+        try:
+            self.indicator.config(fg=colors[self.pulse_state])
+            self.root.after(500, self._animate_pulse)
+        except: pass
 
     def update_text(self, text):
-        if not self.label: return
-        # Truncate if too long for preview
-        display_text = text if len(text) < 150 else "..." + text[-147:]
-        self.label.config(text=display_text)
+        if self.root and self.active:
+            # Clean up the text for better display
+            display_text = text.strip()
+            if not display_text: display_text = "..."
+            if len(display_text) > 120: 
+                display_text = "..." + display_text[-120:]
+            
+            # Use .after to ensure thread-safety (called from transcription thread)
+            try:
+                self.root.after(0, lambda: self._safe_update(display_text))
+            except: pass
+
+    def _safe_update(self, text):
+        if self.label and self.active:
+            self.label.config(text=text)
 
     def hide(self):
         self.active = False
@@ -173,6 +209,7 @@ class PartialOverlay:
             except: pass
             self.root = None
             self.label = None
+            self.indicator = None
 
 # ==================================================================================
 # CONFIGURATION
