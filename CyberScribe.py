@@ -369,6 +369,24 @@ class AudioRecorder:
             log_error(f"Error saving wav: {e}")
             return None
 
+    def save_fragment(self, fragment_frames):
+        """Save a specific list of frames to a temp file."""
+        if not fragment_frames:
+            return None
+        fd, path = tempfile.mkstemp(suffix=".frag.wav")
+        os.close(fd)
+        try:
+            wf = wave.open(path, 'wb')
+            wf.setnchannels(self.channels)
+            wf.setsampwidth(self.audio.get_sample_size(self.format))
+            wf.setframerate(self.rate)
+            wf.writeframes(b''.join(fragment_frames))
+            wf.close()
+            return path
+        except Exception as e:
+            log_error(f"Error saving fragment: {e}")
+            return None
+
     def get_current_audio_path(self):
         """Save current frames to a temp file without stopping the stream."""
         if not self.frames:
@@ -440,7 +458,7 @@ class Transcriber:
             self.loaded_event.set()
             self.loading = False
 
-    def transcribe(self, audio_path):
+    def transcribe(self, audio_path, is_live=False):
         if not self.model:
             if not self.loading and not self.loaded_event.is_set():
                  # Should not happen if strictly following logic, but safety check
@@ -466,11 +484,11 @@ class Transcriber:
 
             segments, info = self.model.transcribe(
                 audio_path,
-                beam_size=preset["beam_size"],
-                best_of=preset["best_of"],
+                beam_size=1 if is_live else preset["beam_size"],
+                best_of=1 if is_live else preset["best_of"],
                 language=lang,
-                condition_on_previous_text=preset["condition_on_previous_text"],
-                vad_filter=preset["vad_filter"],
+                condition_on_previous_text=False, # Faster
+                vad_filter=False if is_live else preset["vad_filter"], # VAD often cuts too much on small chunks
                 vad_parameters=preset["vad_parameters"],
                 no_speech_threshold=preset["no_speech_threshold"],
                 log_prob_threshold=preset["log_prob_threshold"]
@@ -559,6 +577,7 @@ class CyberScribeApp:
 
         self.recorder.start()
         
+        log(f"Config streaming_preview: {self.config.get('streaming_preview')}")
         if self.config.get("streaming_preview"):
             self.overlay.show()
             self.overlay.update_text("LISTENING...")
@@ -582,28 +601,36 @@ class CyberScribeApp:
     def _streaming_loop(self):
         log("Streaming loop started.")
         last_processed_idx = 0
-        pause_between_runs = 1.0 # More responsive
+        pause_between_runs = 1.0 
         
         while self.is_recording:
             time.sleep(pause_between_runs)
             if not self.is_recording: break
             
-            # Avoid processing too frequently if model is slow
-            current_count = len(self.recorder.frames)
-            if current_count <= last_processed_idx + 10: # approx 0.6s of audio min
-                continue
+            # Use only the last 5 seconds for streaming preview to keep it fast
+            # 16000Hz, 1024 chunk -> ~15.6 frames per sec. 5s = ~80 frames.
+            current_frames = self.recorder.frames
+            current_count = len(current_frames)
             
-            audio_path = self.recorder.get_current_audio_path()
+            if current_count <= last_processed_idx + 8:
+                continue
+                
+            # Take only the tail of the buffer
+            tail_size = 120 # approx 7-8 seconds max
+            start_idx = max(0, current_count - tail_size)
+            fragment = current_frames[start_idx:]
+            
+            audio_path = self.recorder.save_fragment(fragment)
             if audio_path:
-                text = self.transcriber.transcribe(audio_path)
-                try:
-                    os.remove(audio_path)
+                text = self.transcriber.transcribe(audio_path, is_live=True)
+                try: os.remove(audio_path)
                 except: pass
                 
                 if text and self.is_recording:
-                    self.last_partial_text = text
+                    # Append or update? For simplicity, we just show the tail.
+                    # As we speak, the tail moves.
                     self.overlay.update_text(text)
-                    log(f"Partial: {text[:30]}...")
+                    log(f"Live Fragment: {text[:30]}...")
             
             last_processed_idx = current_count
 
