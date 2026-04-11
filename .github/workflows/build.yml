@@ -26,7 +26,8 @@ jobs:
 
     - name: Build with PyInstaller
       run: |
-        pyinstaller --noconsole --onefile --noconfirm --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --icon "app.ico" --name "CyberScribe" CyberScribe.py
+        $VAD_PATH = python -c "import faster_whisper, os; print(os.path.join(os.path.dirname(faster_whisper.__file__), 'assets', 'silero_vad_v6.onnx'))"
+        pyinstaller --noconsole --onefile --noconfirm --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "${VAD_PATH};faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
 
     - name: Release
       uses: softprops/action-gh-release@v1

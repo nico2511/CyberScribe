@@ -35,11 +35,13 @@
 
 ### Build your own EXE
 ```bash
-pyinstaller --noconsole --onefile --noconfirm --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --icon "app.ico" --name "CyberScribe" CyberScribe.py
+pyinstaller --noconsole --onefile --noconfirm --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "venv\Lib\site-packages\faster_whisper\assets\silero_vad_v6.onnx;faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
 ```
+*(Note: adjust the path to silero_vad_v6.onnx according to your python installation location)*
 
 ## Ci/CD (Automated Builds)
 This repository is configured with **GitHub Actions**. Every time you push a tag or a new release, an executable is automatically built and attached to the release page.
+
 
 ## Usage
 
