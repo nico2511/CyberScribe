@@ -117,36 +117,37 @@ def get_icon_image(b64_str):
 
 class PartialOverlay:
     """A high-tech, semi-transparent floating UI for live transcription."""
-    def __init__(self):
-        self.root = None
+    def __init__(self, master):
+        self.master = master
+        self.window = None
         self.label = None
         self.indicator = None
         self.active = False
         self.pulse_state = 0
 
     def show(self):
-        if self.root: return
-        self.root = tk.Toplevel() # Better than tk.Tk() for sub-windows
-        self.root.overrideredirect(True)
-        self.root.attributes("-topmost", True)
-        self.root.attributes("-alpha", 0.9)
+        if self.window: return
+        self.window = tk.Toplevel(self.master)
+        self.window.overrideredirect(True)
+        self.window.attributes("-topmost", True)
+        self.window.attributes("-alpha", 0.9)
         
         # Cyber Colors
         BG_COLOR = "#0b1120"    # Deep space black
         ACCENT_COLOR = "#00f2ff" # Electric Cyan
         
-        self.root.config(bg=ACCENT_COLOR) # Glowing border effect
+        self.window.config(bg=ACCENT_COLOR) # Glowing border effect
         
         # Position at the bottom center of the screen
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
+        screen_w = self.window.winfo_screenwidth()
+        screen_h = self.window.winfo_screenheight()
         w, h = 700, 95
         x = (screen_w - w) // 2
         y = screen_h - h - 100
-        self.root.geometry(f"{w}x{h}+{x}+{y}")
+        self.window.geometry(f"{w}x{h}+{x}+{y}")
 
         # Main containment frame for border effect
-        inner_frame = tk.Frame(self.root, bg=BG_COLOR)
+        inner_frame = tk.Frame(self.window, bg=BG_COLOR)
         inner_frame.pack(fill='both', expand=True, padx=1, pady=1)
 
         # Header with "REC" indicator
@@ -156,7 +157,7 @@ class PartialOverlay:
         self.indicator = tk.Label(header, text="●", fg="#ff004c", bg=BG_COLOR, font=("Arial", 11, "bold"))
         self.indicator.pack(side='left')
         
-        tk.Label(header, text="SYSTEM.LIVE_TRANSCRIPTION", fg="#475569", bg=BG_COLOR, font=("Consolas", 8, "bold"), letterspacing=1).pack(side='left', padx=10)
+        tk.Label(header, text="SYSTEM.LIVE_TRANSCRIPTION", fg="#475569", bg=BG_COLOR, font=("Consolas", 8, "bold")).pack(side='left', padx=10)
         
         # Transcription Label
         self.label = tk.Label(
@@ -176,16 +177,16 @@ class PartialOverlay:
 
     def _animate_pulse(self):
         """Simple pulsing effect for the REC dot."""
-        if not self.active or not self.root: return
-        colors = ["#ef4444", "#7f1d1d", "#ef4444", "#991b1b"]
+        if not self.active or not self.window: return
+        colors = ["#ff004c", "#7f1d1d", "#ff004c", "#991b1b"]
         self.pulse_state = (self.pulse_state + 1) % len(colors)
         try:
             self.indicator.config(fg=colors[self.pulse_state])
-            self.root.after(500, self._animate_pulse)
+            self.window.after(500, self._animate_pulse)
         except: pass
 
     def update_text(self, text):
-        if self.root and self.active:
+        if self.window and self.active:
             # Clean up the text for better display
             display_text = text.strip()
             if not display_text: display_text = "..."
@@ -194,7 +195,7 @@ class PartialOverlay:
             
             # Use .after to ensure thread-safety (called from transcription thread)
             try:
-                self.root.after(0, lambda: self._safe_update(display_text))
+                self.window.after(0, lambda: self._safe_update(display_text))
             except: pass
 
     def _safe_update(self, text):
@@ -203,11 +204,11 @@ class PartialOverlay:
 
     def hide(self):
         self.active = False
-        if self.root:
+        if self.window:
             try:
-                self.root.destroy()
+                self.window.destroy()
             except: pass
-            self.root = None
+            self.window = None
             self.label = None
             self.indicator = None
 
@@ -487,13 +488,17 @@ class Transcriber:
 
 class CyberScribeApp:
     def __init__(self):
+        # Initialize hidden Tkinter root for the whole app session
+        self.root = tk.Tk()
+        self.root.withdraw()
+        
         self.config = ConfigManager()
         self.recorder = AudioRecorder()
         self.transcriber = Transcriber(self.config)
         self.is_recording = False
         self.auto_stop_timer = None
         
-        self.overlay = PartialOverlay()
+        self.overlay = PartialOverlay(self.root)
         self.streaming_thread = None
         self.last_partial_text = ""
         
@@ -556,6 +561,7 @@ class CyberScribeApp:
         
         if self.config.get("streaming_preview"):
             self.overlay.show()
+            self.overlay.update_text("LISTENING...")
             self.streaming_thread = threading.Thread(target=self._streaming_loop, daemon=True)
             self.streaming_thread.start()
 
@@ -576,7 +582,7 @@ class CyberScribeApp:
     def _streaming_loop(self):
         log("Streaming loop started.")
         last_processed_idx = 0
-        pause_between_runs = 1.8 # Seconds
+        pause_between_runs = 1.0 # More responsive
         
         while self.is_recording:
             time.sleep(pause_between_runs)
@@ -584,7 +590,7 @@ class CyberScribeApp:
             
             # Avoid processing too frequently if model is slow
             current_count = len(self.recorder.frames)
-            if current_count <= last_processed_idx + 15: # approx 1s of audio min
+            if current_count <= last_processed_idx + 10: # approx 0.6s of audio min
                 continue
             
             audio_path = self.recorder.get_current_audio_path()
@@ -798,7 +804,7 @@ class CyberScribeApp:
 
     def show_splash(self):
         try:
-            splash = tk.Tk()
+            splash = tk.Toplevel(self.root)
             splash.overrideredirect(True)
             splash.attributes('-topmost', True)
             w, h = 400, 100
@@ -809,8 +815,9 @@ class CyberScribeApp:
             frame.pack(fill='both', expand=True)
             tk.Label(frame, text="CyberScribe", font=("Segoe UI", 16, "bold"), bg='#1f2937', fg='white').pack(pady=(20,5))
             tk.Label(frame, text="Prêt à l'écoute. Appuyez sur votre raccourci.", font=("Segoe UI", 10), bg='#1f2937', fg='#d1d5db').pack(pady=(0,20))
-            splash.after(3000, splash.destroy)
-            splash.mainloop()
+            
+            # Close splash after 3s
+            self.root.after(3000, splash.destroy)
         except Exception as e:
             log_error(f"Splash error: {e}")
 
@@ -830,8 +837,13 @@ class CyberScribeApp:
         self.update_tray_icon(loading=True)
         while True:
             try:
+                # Update Tkinter events to keep overlay responsive
                 try:
-                    msg = self.queue.get(timeout=0.5)
+                    self.root.update()
+                except: pass
+
+                try:
+                    msg = self.queue.get(timeout=0.1)
                 except queue.Empty:
                     if self.transcriber.model and not self.transcriber.loading:
                         if not self.is_recording:
