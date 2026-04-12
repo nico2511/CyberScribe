@@ -11,7 +11,7 @@
 #    pipwin install pyaudio
 #
 # 3. COMPILATION EN .EXE (Mode Autonome)
-#    pyinstaller --noconsole --onefile --noconfirm --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --name "CyberScribe" CyberScribe.py
+#    pyinstaller --noconsole --onefile --noconfirm --icon="app.ico" --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "C:/Users/User/AppData/Local/Programs/Python/Python312/Lib/site-packages/faster_whisper/assets;faster_whisper/assets" --name "CyberScribe" CyberScribe.py
 #
 # ==================================================================================
 """
@@ -138,39 +138,22 @@ class PartialOverlay:
         
         self.window.config(bg=ACCENT_COLOR) # Glowing border effect
         
-        # Position at the bottom center of the screen
+        # Position at the bottom center, but much smaller
         screen_w = self.window.winfo_screenwidth()
         screen_h = self.window.winfo_screenheight()
-        w, h = 700, 95
+        w, h = 220, 45
         x = (screen_w - w) // 2
-        y = screen_h - h - 100
+        y = screen_h - h - 50
         self.window.geometry(f"{w}x{h}+{x}+{y}")
 
         # Main containment frame for border effect
         inner_frame = tk.Frame(self.window, bg=BG_COLOR)
         inner_frame.pack(fill='both', expand=True, padx=1, pady=1)
 
-        # Header with "REC" indicator
-        header = tk.Frame(inner_frame, bg=BG_COLOR)
-        header.pack(fill='x', padx=15, pady=(8, 2))
-
-        self.indicator = tk.Label(header, text="●", fg="#ff004c", bg=BG_COLOR, font=("Arial", 11, "bold"))
-        self.indicator.pack(side='left')
+        self.indicator = tk.Label(inner_frame, text="●", fg="#ff004c", bg=BG_COLOR, font=("Arial", 14, "bold"))
+        self.indicator.pack(side='left', padx=(15, 5))
         
-        tk.Label(header, text="SYSTEM.LIVE_TRANSCRIPTION", fg="#475569", bg=BG_COLOR, font=("Consolas", 8, "bold")).pack(side='left', padx=10)
-        
-        # Transcription Label
-        self.label = tk.Label(
-            inner_frame, 
-            text="STANDING BY...", 
-            font=("Segoe UI Semibold", 14), 
-            fg=ACCENT_COLOR, 
-            bg=BG_COLOR,
-            anchor='center',
-            justify='center',
-            wraplength=660
-        )
-        self.label.pack(expand=True, fill='both', padx=20, pady=(0, 10))
+        tk.Label(inner_frame, text="Enregistrement...", fg=ACCENT_COLOR, bg=BG_COLOR, font=("Segoe UI Semibold", 10)).pack(side='left', padx=(0, 15))
         
         self.active = True
         self._animate_pulse()
@@ -186,21 +169,10 @@ class PartialOverlay:
         except: pass
 
     def update_text(self, text):
-        if self.window and self.active:
-            # Clean up the text for better display
-            display_text = text.strip()
-            if not display_text: display_text = "..."
-            if len(display_text) > 120: 
-                display_text = "..." + display_text[-120:]
-            
-            # Use .after to ensure thread-safety (called from transcription thread)
-            try:
-                self.window.after(0, lambda: self._safe_update(display_text))
-            except: pass
+        pass # Fonctionnalité de live stream retirée, cette méthode est ignorée
 
     def _safe_update(self, text):
-        if self.label and self.active:
-            self.label.config(text=text)
+        pass
 
     def hide(self):
         self.active = False
@@ -224,8 +196,7 @@ DEFAULT_CONFIG = {
     "device": "auto",
     "compute_type": "int8",
     "transcription_profile": "fast",
-    "max_record_seconds": 25,
-    "streaming_preview": True
+    "max_record_seconds": 25
 }
 
 PROFILE_PRESETS = {
@@ -282,9 +253,13 @@ class ConfigManager:
             try:
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    self.config.update(data)
+                    if isinstance(data, dict):
+                        self.config.update(data)
             except Exception as e:
                 log_error(f"Erreur chargement config: {e}")
+        else:
+            # Create default config file if it doesn't exist
+            self.save()
 
     def save(self):
         try:
@@ -294,7 +269,10 @@ class ConfigManager:
             log_error(f"Erreur sauvegarde config: {e}")
 
     def get(self, key):
-        return self.config.get(key, DEFAULT_CONFIG.get(key))
+        val = self.config.get(key)
+        if val is None or val == "":
+            return DEFAULT_CONFIG.get(key)
+        return val
 
     def set(self, key, value):
         self.config[key] = value
@@ -517,8 +495,7 @@ class CyberScribeApp:
         self.auto_stop_timer = None
         
         self.overlay = PartialOverlay(self.root)
-        self.streaming_thread = None
-        self.last_partial_text = ""
+        self.settings_window = None
         
         self.icon_gray = get_icon_image(ICON_GRAY_B64)
         self.icon_red = get_icon_image(ICON_RED_B64)
@@ -577,12 +554,8 @@ class CyberScribeApp:
 
         self.recorder.start()
         
-        log(f"Config streaming_preview: {self.config.get('streaming_preview')}")
-        if self.config.get("streaming_preview"):
-            self.overlay.show()
-            self.overlay.update_text("LISTENING...")
-            self.streaming_thread = threading.Thread(target=self._streaming_loop, daemon=True)
-            self.streaming_thread.start()
+        # Show discrete overlay
+        self.overlay.show()
 
         max_seconds = self.config.get("max_record_seconds")
         try:
@@ -597,42 +570,6 @@ class CyberScribeApp:
             self.auto_stop_timer.daemon = True
             self.auto_stop_timer.start()
             log(f"Auto-stop armed at {max_seconds}s.")
-
-    def _streaming_loop(self):
-        log("Streaming loop started.")
-        last_processed_idx = 0
-        pause_between_runs = 1.0 
-        
-        while self.is_recording:
-            time.sleep(pause_between_runs)
-            if not self.is_recording: break
-            
-            # Use only the last 5 seconds for streaming preview to keep it fast
-            # 16000Hz, 1024 chunk -> ~15.6 frames per sec. 5s = ~80 frames.
-            current_frames = self.recorder.frames
-            current_count = len(current_frames)
-            
-            if current_count <= last_processed_idx + 8:
-                continue
-                
-            # Take only the tail of the buffer
-            tail_size = 120 # approx 7-8 seconds max
-            start_idx = max(0, current_count - tail_size)
-            fragment = current_frames[start_idx:]
-            
-            audio_path = self.recorder.save_fragment(fragment)
-            if audio_path:
-                text = self.transcriber.transcribe(audio_path, is_live=True)
-                try: os.remove(audio_path)
-                except: pass
-                
-                if text and self.is_recording:
-                    # Append or update? For simplicity, we just show the tail.
-                    # As we speak, the tail moves.
-                    self.overlay.update_text(text)
-                    log(f"Live Fragment: {text[:30]}...")
-            
-            last_processed_idx = current_count
 
     def stop_recording_action(self):
         log("Action: Stop Recording")
@@ -716,37 +653,42 @@ class CyberScribeApp:
         self.queue.put("quit")
 
     def open_settings_window(self):
+        if self.settings_window and self.settings_window.winfo_exists():
+            try:
+                self.settings_window.lift()
+                self.settings_window.focus_force()
+                return
+            except: pass
+
         try:
-            root = tk.Tk()
+            self.settings_window = tk.Toplevel(self.root)
+            root = self.settings_window
             root.title("CyberScribe Config")
-            root.geometry("460x860")
             
             # Colors
             C_BG = '#0f172a'       # Dark Slate (Main BG)
             C_FG = '#e2e8f0'       # Light Silver (Text)
             C_ACCENT = '#06b6d4'   # Cyan (Headers/Buttons)
-            C_ACCENT_HOVER = '#0891b2'
             C_INPUT_BG = '#1e293b' # Darker Slate (Inputs)
             C_INPUT_FG = '#38bdf8' # Sky Blue (Input Text)
             C_WARN = '#f43f5e'     # Rose (Test Button)
             
             root.configure(bg=C_ACCENT) 
             
-            root.update_idletasks()
             width = 460
             height = 820
-            x = (root.winfo_screenwidth() // 2) - (width // 2)
-            y = (root.winfo_screenheight() // 2) - (height // 2)
+            ws, hs = root.winfo_screenwidth(), root.winfo_screenheight()
+            x = (ws // 2) - (width // 2)
+            y = (hs // 2) - (height // 2)
             root.geometry(f'{width}x{height}+{x}+{y}')
             
-            root.lift()
-            root.attributes('-topmost',True)
-            root.after_idle(root.attributes,'-topmost',False)
+            root.attributes('-topmost', True)
+            root.after(100, lambda: root.attributes('-topmost', False))
 
             main_frame = tk.Frame(root, bg=C_BG)
             main_frame.pack(fill='both', expand=True, padx=2, pady=2)
 
-            style = ttk.Style()
+            style = ttk.Style(root)
             style.theme_use('clam')
             style.configure('TCombobox', fieldbackground=C_INPUT_BG, background=C_INPUT_BG, foreground=C_INPUT_FG, arrowcolor=C_ACCENT)
             
@@ -765,44 +707,41 @@ class CyberScribeApp:
 
             create_label(">> ACTIVATION KEY").pack(pady=(10, 2))
             create_help_text("Key binding for recording sequence (e.g., F8)").pack(pady=(0, 5))
-            hk_var = tk.StringVar(value=self.config.get("hotkey"))
+            hk_var = tk.StringVar(root, value=self.config.get("hotkey"))
             create_entry(hk_var).pack(pady=0, ipadx=5, ipady=3)
 
             create_label(">> LANGUAGE MODULE").pack(pady=(15, 2))
             create_help_text("Target language for vocal processing.").pack(pady=(0, 5))
-            lang_var = tk.StringVar(value=self.config.get("language") or "auto")
+            lang_var = tk.StringVar(root, value=self.config.get("language") or "auto")
             LANGUAGES = ["auto", "en", "fr", "de", "es", "it", "ja", "zh", "nl", "uk", "pt", "ru"]
             lang_cb = ttk.Combobox(main_frame, textvariable=lang_var, values=LANGUAGES, font=("Consolas", 10))
             lang_cb.pack(pady=0)
 
             create_label(">> NEURAL MODEL").pack(pady=(15, 2))
             create_help_text("Model size: Tiny (Fast) <-> Large (Precise)").pack(pady=(0, 5))
-            model_var = tk.StringVar(value=self.config.get("model_size"))
+            model_var = tk.StringVar(root, value=self.config.get("model_size"))
             model_cb = ttk.Combobox(main_frame, textvariable=model_var, values=["tiny", "base", "small", "medium", "large-v3"], font=("Consolas", 10))
             model_cb.pack(pady=0)
 
             create_label(">> PROCESSING UNIT").pack(pady=(15, 2))
             create_help_text("Compute device: CPU (Universal) / CUDA (GPU)").pack(pady=(0, 5))
-            device_var = tk.StringVar(value=self.config.get("device"))
+            device_var = tk.StringVar(root, value=self.config.get("device"))
             device_cb = ttk.Combobox(main_frame, textvariable=device_var, values=["auto", "cpu", "cuda"], font=("Consolas", 10))
             device_cb.pack(pady=0)
 
             create_label(">> TRANSCRIPTION PROFILE").pack(pady=(15, 2))
             create_help_text("fast = low latency, balanced = compromise, accurate = quality").pack(pady=(0, 5))
-            profile_var = tk.StringVar(value=self.config.get("transcription_profile") or "fast")
+            profile_var = tk.StringVar(root, value=self.config.get("transcription_profile") or "fast")
             profile_cb = ttk.Combobox(main_frame, textvariable=profile_var, values=["fast", "balanced", "accurate"], font=("Consolas", 10))
             profile_cb.pack(pady=0)
 
             create_label(">> MAX RECORD DURATION (SECONDS)").pack(pady=(15, 2))
             create_help_text("Auto-stop safety. 0 disables limit. Recommended: 15-30s").pack(pady=(0, 5))
-            max_record_var = tk.StringVar(value=str(self.config.get("max_record_seconds") or 25))
+            max_record_var = tk.StringVar(root, value=str(self.config.get("max_record_seconds") or 25))
             create_entry(max_record_var).pack(pady=0, ipadx=5, ipady=3)
 
-            streaming_var = tk.BooleanVar(value=bool(self.config.get("streaming_preview")))
-            tk.Checkbutton(main_frame, text="LIVE TRANSLATION PREVIEW (STREAMING)", variable=streaming_var, bg=C_BG, fg=C_ACCENT, selectcolor=C_BG, activebackground=C_BG, activeforeground=C_ACCENT, font=("Segoe UI", 9, "bold")).pack(pady=10)
-
             create_label(">> MODEL STORAGE").pack(pady=(15, 2))
-            path_var = tk.StringVar(value=MODELS_DIR)
+            path_var = tk.StringVar(root, value=MODELS_DIR)
             path_entry = tk.Entry(main_frame, textvariable=path_var, bg=C_INPUT_BG, fg='#94a3b8', font=("Consolas", 9), relief='flat', bd=5, state='readonly', readonlybackground=C_INPUT_BG)
             path_entry.pack(pady=0, fill='x', padx=30)
 
@@ -819,13 +758,11 @@ class CyberScribeApp:
                 try:
                     self.config.set("max_record_seconds", int(max_record_var.get()))
                 except: pass
-                self.config.set("streaming_preview", streaming_var.get())
                 self.setup_hotkey()
                 messagebox.showinfo("CyberScribe", "SYSTEM UPDATED.", parent=root)
                 root.destroy()
 
             tk.Button(main_frame, text=">> SAVE CONFIGURATION <<", command=save, bg=C_ACCENT, fg="white", font=("Consolas", 11, "bold"), relief='flat').pack(pady=10, ipadx=20, ipady=5)
-            root.mainloop()
         except Exception as e:
             log_error(f"GUI Error: {e}")
 
