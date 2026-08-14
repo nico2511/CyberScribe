@@ -1,55 +1,60 @@
-# 🤖 CyberScribe
+# CyberScribe
 
-**CyberScribe** is a local, offline voice transcription tool powered by `faster-whisper`. It features a robot-themed UI, system tray integration, and global hotkeys for instant recording with **real-time streaming preview**.
+**CyberScribe** is a local, offline voice transcription tool for Windows, powered by `faster-whisper`. It lives in the system tray, records from a global hotkey, transcribes on-device, then pastes the text into the active window.
 
 ![Configuration Window](screenshots/sc.png)
 
-## 🚀 New Features
+## Features
 
-- ⚡ **Partial Streaming**: Live transcription preview in a floating overlay window during recording.
-- 📉 **Anti-Latency Engine**: Configurable performance profiles (Fast, Balanced, Accurate) to match your hardware.
-- 📟 **Smart Device Detection**: Automatic CUDA (NVIDIA GPU) or CPU selection for maximum efficiency.
-- ⏱️ **Auto-Stop Safety**: Configurable maximum recording duration to prevent runaway dictation.
-- 🎙️ **Audio Robustness**: Improved audio handling with overflow protection.
+- **Offline transcription**: Faster-Whisper, models stored next to the app. No cloud.
+- **Global hotkey**: Toggle recording from anywhere (default `F8`). Combinations like `ctrl+shift+f8` are supported.
+- **Recording overlay**: A compact always-on-top indicator while you speak.
+- **Audio feedback**: Beeps on start and stop.
+- **Auto-paste**: Copies the transcript and sends Ctrl+V to the focused window.
+- **Anti-latency profiles**: Fast, Balanced, Accurate.
+- **Smart device detection**: Automatic CUDA (NVIDIA GPU) or CPU.
+- **Auto-stop safety**: Configurable maximum recording duration.
+- **Single instance**: A second launch is refused so hotkeys do not collide.
 
-## Core Features
+## Requirements
 
-- 🎙️ **Offline Transcription**: Powered by Faster-Whisper.
-- ⌨️ **Global Hotkey**: Toggle recording from anywhere (default F8).
-- 🔊 **Audio Feedback**: Audible cues (beeps) when starting and stopping records.
-- 📋 **Auto-Paste**: Automatically pastes transcribed text into your active window.
-- 🧪 **System Self-Test**: Integrated diagnostic tool to verify your setup.
+- Windows 10/11
+- A microphone
+- Optional: NVIDIA GPU + current drivers for CUDA acceleration
 
 ## Installation / Compilation
 
 ### Local Development
-1. **Install Dependencies**:
-   ```bash
-   pip install faster-whisper pyaudio pystray Pillow pyperclip pyautogui pynput
-   ```
 
-2. **Run Script**:
-   ```bash
-   python CyberScribe.py
-   ```
+```bash
+pip install -r requirements.txt
+python CyberScribe.py
+```
 
 ### Build your own EXE
+
 ```bash
+pip install -r requirements.txt pyinstaller
 pyinstaller --noconsole --onefile --noconfirm --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "venv\Lib\site-packages\faster_whisper\assets\silero_vad_v6.onnx;faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
 ```
-*(Note: adjust the path to silero_vad_v6.onnx according to your python installation location)*
 
-## Ci/CD (Automated Builds)
-This repository is configured with **GitHub Actions**. Every time you push a tag or a new release, an executable is automatically built and attached to the release page.
+*(Adjust the path to `silero_vad_v6.onnx` according to your Python environment.)*
 
+## CI/CD (Automated Builds)
+
+This repository uses **GitHub Actions**. Pushing a `v*` tag builds `CyberScribe.exe` on Windows and attaches it to the GitHub Release.
 
 ## Usage
 
-1. Run the executable.
-2. Wait for the Splash Screen.
-3. Press **F8** (or your configured hotkey) to start recording. You will hear a **high beep**.
-4. A **Live Preview** window will show your text as you speak.
-5. Press **F8** again to stop. The final text will be pasted automatically.
+1. Run the executable (or `python CyberScribe.py`).
+2. Wait until the tray tooltip says **Prêt** — the Whisper model may still be loading on first launch.
+3. Press **F8** (or your configured hotkey) to start recording. You will hear a high beep and see the overlay.
+4. Press the hotkey again to stop. The transcribed text is pasted into the active window.
+5. Open **Configuration** from the tray icon to change hotkey, language, model, device, compute type, profile, and max duration. Changing the model or device reloads Whisper in the background.
+
+## Privacy
+
+Transcription runs entirely on your machine. Application logs record events and error messages, never the dictated text.
 
 ## Support
 

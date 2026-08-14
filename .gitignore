@@ -15,5 +15,8 @@ dist/
 # VS Code
 .vscode/
 
-# Local configuration
+# Local configuration and downloaded models
 config.json
+config.json.tmp
+models/
+*.wav
