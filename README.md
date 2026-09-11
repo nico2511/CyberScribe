@@ -56,6 +56,10 @@ This repository uses **GitHub Actions**. Pushing a `v*` tag builds `CyberScribe.
 
 Transcription runs entirely on your machine. Application logs record events and error messages, never the dictated text.
 
+## Project status / reprise
+
+Current release: **v1.2.0**. After a machine reinstall, see [`docs/REPRISE.md`](docs/REPRISE.md) for the stop point, restore steps, and the open v1.2 test checklist. Copy `config.example.json` to `config.json` for a starting config.
+
 ## Support
 
 If you like CyberScribe, consider supporting the project!

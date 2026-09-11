@@ -1,0 +1,9 @@
+{
+    "hotkey": "F8",
+    "language": "fr",
+    "model_size": "base",
+    "device": "auto",
+    "compute_type": "int8",
+    "transcription_profile": "fast",
+    "max_record_seconds": 25
+}
