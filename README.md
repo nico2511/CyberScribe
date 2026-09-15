@@ -63,7 +63,7 @@ Transcription runs entirely on your machine. Application logs record events and 
 
 ## Project status / reprise
 
-Current release line: **v1.4.0** (configurable models folder, Inno installer, in-app EXE updater). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). After a machine reinstall, see [`docs/REPRISE.md`](docs/REPRISE.md). Copy `config.example.json` to `config.json` for a starting config.
+Current release line: **v1.4.0** (configurable models folder, Inno installer, in-app EXE updater). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). Copy `config.example.json` to `config.json` for a starting config.
 
 ## Support
 

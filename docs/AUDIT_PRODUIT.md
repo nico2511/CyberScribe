@@ -60,7 +60,7 @@ Config atomique (config.json à côté de l’EXE)
 - Threads : enregistrement, transcription, chargement modèle, update check — file `queue` pour le thread Tk principal (correct pour l’UI).
 - Arrêt : plus de `os._exit` brutal ; nettoyage micro, hotkey, tray.
 
-**Pistes non engagées** (inchangées par rapport à REPRISE.md)
+**Pistes non engagées**
 
 - Checklist de tests manuels v1.2/v1.3 sur machine Windows réelle.
 - Signature code, installateur MSI, canal beta.
@@ -118,4 +118,4 @@ Un processus ne peut pas remplacer son propre fichier `.exe` en cours d’exécu
 1. Tag `v1.3.0` pour activer l’updater côté clients déjà en 1.2.x (ils verront la nouvelle version).
 2. Conserver **le nom d’asset** `CyberScribe.exe` stable.
 3. Envisager **signature Authenticode** sur l’EXE pour réduire les alertes SmartScreen.
-4. Exécuter le plan de test REPRISE + scénarios update (check, download, restart, config conservée).
+4. Exécuter les scénarios de test manuels (dictée, update, migration modèles).
