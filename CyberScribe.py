@@ -32,7 +32,7 @@ from io import BytesIO
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 APP_MUTEX_NAME = "Global\\CyberScribeSingleInstance"
 ERROR_ALREADY_EXISTS = 183
 
@@ -150,6 +150,23 @@ except ImportError as e:
     )
     sys.exit(1)
 
+try:
+    from updater import (
+        check_for_update,
+        cleanup_staging,
+        download_release_exe,
+        is_frozen_build,
+        launch_apply_and_exit,
+    )
+except ImportError:
+    check_for_update = None
+    download_release_exe = None
+    launch_apply_and_exit = None
+    cleanup_staging = None
+
+    def is_frozen_build():
+        return bool(getattr(sys, "frozen", False))
+
 # ==================================================================================
 # ASSETS (BASE64)
 # ==================================================================================
@@ -250,6 +267,7 @@ DEFAULT_CONFIG = {
     "compute_type": "int8",
     "transcription_profile": "fast",
     "max_record_seconds": 25,
+    "check_updates": True,
 }
 ALLOWED_KEYS = set(DEFAULT_CONFIG.keys())
 
@@ -345,6 +363,14 @@ def sanitize_config(data):
     except (TypeError, ValueError):
         max_seconds = DEFAULT_CONFIG["max_record_seconds"]
     cfg["max_record_seconds"] = max(0, min(max_seconds, MAX_RECORD_SECONDS_CAP))
+
+    check_updates = cfg.get("check_updates")
+    if isinstance(check_updates, bool):
+        cfg["check_updates"] = check_updates
+    elif isinstance(check_updates, str):
+        cfg["check_updates"] = check_updates.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        cfg["check_updates"] = bool(DEFAULT_CONFIG["check_updates"])
     return cfg
 
 
@@ -649,7 +675,15 @@ class CyberScribeApp:
         self.queue = queue.Queue()
         self.hotkey_listener = None
 
+        self._update_checking = False
+        self._update_downloading = False
+        self._pending_update = None
+        self._update_progress = None
+        self._quit_for_update = False
+
         self.setup_hotkey()
+        if check_for_update and self.config.get("check_updates"):
+            threading.Thread(target=self._background_update_check, daemon=True).start()
 
     def setup_hotkey(self):
         if self.hotkey_listener:
@@ -806,6 +840,142 @@ class CyberScribeApp:
 
     def request_quit(self, icon, item):
         self.queue.put("quit")
+
+    def request_check_updates(self, icon, item):
+        self.queue.put("check_updates")
+
+    def _background_update_check(self):
+        if self._update_checking or not check_for_update:
+            return
+        self._update_checking = True
+        try:
+            time.sleep(8)
+            if not self._running:
+                return
+            result = check_for_update(__version__)
+            if result.update_available and result.latest:
+                self._pending_update = result.latest
+                self.queue.put(("update_available", result.latest.version))
+        except Exception as e:
+            log_error(f"Background update check: {e}")
+        finally:
+            self._update_checking = False
+
+    def _manual_update_check(self):
+        if not check_for_update:
+            messagebox.showinfo(
+                "CyberScribe",
+                "Le module de mise à jour n'est pas disponible dans cette installation.",
+                parent=self.root,
+            )
+            return
+        if self._update_checking:
+            messagebox.showinfo("CyberScribe", "Vérification déjà en cours…", parent=self.root)
+            return
+
+        def _work():
+            self._update_checking = True
+            try:
+                result = check_for_update(__version__)
+                self.queue.put(("update_check_done", result))
+            finally:
+                self._update_checking = False
+
+        threading.Thread(target=_work, daemon=True).start()
+        self._notify("CyberScribe", "Recherche de mises à jour sur GitHub…")
+
+    def _show_update_check_result(self, result):
+        if not result.ok:
+            messagebox.showwarning(
+                "CyberScribe",
+                f"Impossible de vérifier les mises à jour.\n{result.error or 'Erreur inconnue'}",
+                parent=self.root,
+            )
+            return
+        if not result.update_available or not result.latest:
+            messagebox.showinfo(
+                "CyberScribe",
+                f"Vous utilisez la dernière version ({__version__}).",
+                parent=self.root,
+            )
+            return
+        self._pending_update = result.latest
+        self._prompt_install_update(result.latest.version)
+
+    def _prompt_install_update(self, new_version):
+        if not is_frozen_build():
+            messagebox.showinfo(
+                "CyberScribe",
+                f"Version {new_version} disponible sur GitHub.\n"
+                "La mise à jour automatique s'applique uniquement à l'exécutable Windows (CyberScribe.exe).",
+                parent=self.root,
+            )
+            return
+        answer = messagebox.askyesno(
+            "CyberScribe — mise à jour",
+            f"La version {new_version} est disponible (vous êtes en {__version__}).\n\n"
+            "Télécharger et installer maintenant ?\n"
+            "L'application redémarrera après la mise à jour.",
+            parent=self.root,
+        )
+        if answer:
+            self._start_update_download()
+
+    def _start_update_download(self):
+        release = self._pending_update
+        if not release or not download_release_exe:
+            return
+        if self._update_downloading:
+            return
+        self._update_downloading = True
+        self._update_progress = {"done": 0, "total": release.exe_size}
+        self._notify("CyberScribe", f"Téléchargement de la v{release.version}…")
+        self.update_tray_icon(loading=True)
+
+        def _work():
+            try:
+                def on_progress(done, total):
+                    self._update_progress = {"done": done, "total": total}
+
+                path = download_release_exe(release, APP_DIR, __version__, progress=on_progress)
+                self.queue.put(("update_downloaded", path, release.version))
+            except Exception as e:
+                log_error(f"Update download failed: {e}")
+                self.queue.put(("update_download_failed", str(e)))
+            finally:
+                self._update_downloading = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _finish_update_download(self, staging_path, new_version):
+        self.update_tray_icon(loading=False)
+        if not os.path.isfile(staging_path):
+            messagebox.showerror(
+                "CyberScribe",
+                "Fichier de mise à jour introuvable après téléchargement.",
+                parent=self.root,
+            )
+            return
+        answer = messagebox.askyesno(
+            "CyberScribe — mise à jour",
+            f"Téléchargement terminé (v{new_version}).\n"
+            "Installer maintenant et redémarrer CyberScribe ?",
+            parent=self.root,
+        )
+        if not answer:
+            return
+        try:
+            exe_name = os.path.basename(sys.executable)
+            launch_apply_and_exit(APP_DIR, exe_name)
+            self._quit_for_update = True
+            self.queue.put("quit")
+        except Exception as e:
+            log_error(f"Could not launch update script: {e}")
+            messagebox.showerror(
+                "CyberScribe",
+                f"Échec du lancement de la mise à jour :\n{e}",
+                parent=self.root,
+            )
 
     def open_settings_window(self):
         if self.settings_window and self.settings_window.winfo_exists():
@@ -991,6 +1161,43 @@ class CyberScribeApp:
             max_record_var = tk.StringVar(root, value=str(self.config.get("max_record_seconds") or 25))
             create_entry(max_record_var).pack(pady=0, ipadx=5, ipady=3)
 
+            create_label(">> SOFTWARE UPDATES").pack(pady=(12, 2))
+            create_help_text(
+                "Vérifie GitHub Releases pour CyberScribe.exe (connexion Internet requise)."
+            ).pack(pady=(0, 4))
+            check_updates_var = tk.BooleanVar(
+                root, value=bool(self.config.get("check_updates"))
+            )
+
+            def _toggle_check_updates():
+                self.config.set("check_updates", bool(check_updates_var.get()))
+
+            tk.Checkbutton(
+                main_frame,
+                text="Vérifier automatiquement au démarrage",
+                variable=check_updates_var,
+                command=_toggle_check_updates,
+                bg=C_BG,
+                fg="#e2e8f0",
+                selectcolor=C_INPUT_BG,
+                activebackground=C_BG,
+                activeforeground="#e2e8f0",
+                font=("Consolas", 9),
+            ).pack(anchor="w", padx=30)
+
+            def _check_updates_ui():
+                self._manual_update_check()
+
+            tk.Button(
+                main_frame,
+                text="[ VÉRIFIER LES MISES À JOUR ]",
+                command=_check_updates_ui,
+                bg="#334155",
+                fg="white",
+                font=("Consolas", 9, "bold"),
+                relief="flat",
+            ).pack(pady=(8, 4), ipadx=8)
+
             create_label(">> MODEL STORAGE").pack(pady=(12, 2))
             path_var = tk.StringVar(root, value=MODELS_DIR)
             tk.Entry(
@@ -1109,10 +1316,15 @@ class CyberScribeApp:
             log_error(f"Splash error: {e}")
 
     def run_tray(self):
-        menu = pystray.Menu(
+        menu_items = [
             pystray.MenuItem("Configuration", self.request_settings),
-            pystray.MenuItem("Quitter", self.request_quit),
-        )
+        ]
+        if check_for_update:
+            menu_items.append(
+                pystray.MenuItem("Vérifier les mises à jour", self.request_check_updates)
+            )
+        menu_items.append(pystray.MenuItem("Quitter", self.request_quit))
+        menu = pystray.Menu(*menu_items)
         self.tray_icon = pystray.Icon(
             "CyberScribe", self.icon_gray, f"CyberScribe v{__version__}", menu
         )
@@ -1147,8 +1359,28 @@ class CyberScribeApp:
                 elif msg == "auto_stop_recording":
                     if self.is_recording:
                         self.stop_recording_action()
+                elif msg == "check_updates":
+                    self._manual_update_check()
                 elif msg == "quit":
                     break
+                elif isinstance(msg, tuple) and msg:
+                    if msg[0] == "update_available" and len(msg) > 1:
+                        self._notify(
+                            "CyberScribe",
+                            f"Mise à jour v{msg[1]} disponible — menu ou Configuration.",
+                        )
+                    elif msg[0] == "update_check_done" and len(msg) > 1:
+                        self._show_update_check_result(msg[1])
+                    elif msg[0] == "update_downloaded" and len(msg) > 2:
+                        self._finish_update_download(msg[1], msg[2])
+                    elif msg[0] == "update_download_failed" and len(msg) > 1:
+                        self.update_tray_icon(loading=False)
+                        self._notify("CyberScribe", "Échec du téléchargement de la mise à jour.")
+                        messagebox.showerror(
+                            "CyberScribe",
+                            f"Téléchargement impossible :\n{msg[1]}",
+                            parent=self.root,
+                        )
             except KeyboardInterrupt:
                 break
         self.stop_app()
@@ -1191,6 +1423,11 @@ class CyberScribeApp:
             self.root.destroy()
         except Exception:
             pass
+        if cleanup_staging and not self._quit_for_update:
+            try:
+                cleanup_staging(APP_DIR)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

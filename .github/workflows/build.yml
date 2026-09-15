@@ -30,13 +30,20 @@ jobs:
     - name: Build with PyInstaller
       run: |
         $VAD_PATH = python -c "import faster_whisper, os; print(os.path.join(os.path.dirname(faster_whisper.__file__), 'assets', 'silero_vad_v6.onnx'))"
-        pyinstaller --noconsole --onefile --noconfirm --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "${VAD_PATH};faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
+        pyinstaller --noconsole --onefile --noconfirm --hidden-import=updater --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "${VAD_PATH};faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
+
+    - name: Write SHA256 sidecar
+      run: |
+        $hash = (Get-FileHash -Path dist/CyberScribe.exe -Algorithm SHA256).Hash.ToLower()
+        Set-Content -Path dist/CyberScribe.exe.sha256 -Value $hash -NoNewline
 
     - name: Release
       uses: softprops/action-gh-release@v2
       if: startsWith(github.ref, 'refs/tags/')
       with:
-        files: dist/CyberScribe.exe
+        files: |
+          dist/CyberScribe.exe
+          dist/CyberScribe.exe.sha256
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

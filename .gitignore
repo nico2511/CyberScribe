@@ -20,3 +20,8 @@ config.json
 config.json.tmp
 models/
 *.wav
+
+# In-app updater (local install folder)
+CyberScribe.update.exe
+_cyberscribe_apply_update.cmd
+CyberScribe.exe.bak

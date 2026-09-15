@@ -15,6 +15,7 @@
 - **Smart device detection**: Automatic CUDA (NVIDIA GPU) or CPU.
 - **Auto-stop safety**: Configurable maximum recording duration.
 - **Single instance**: A second launch is refused so hotkeys do not collide.
+- **In-app updates** (Windows EXE): Optional check against GitHub Releases; downloads and swaps `CyberScribe.exe` in place while keeping `config.json` and `models/`.
 
 ## Requirements
 
@@ -35,7 +36,7 @@ python CyberScribe.py
 
 ```bash
 pip install -r requirements.txt pyinstaller
-pyinstaller --noconsole --onefile --noconfirm --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "venv\Lib\site-packages\faster_whisper\assets\silero_vad_v6.onnx;faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
+pyinstaller --noconsole --onefile --noconfirm --hidden-import=updater --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "venv\Lib\site-packages\faster_whisper\assets\silero_vad_v6.onnx;faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
 ```
 
 *(Adjust the path to `silero_vad_v6.onnx` according to your Python environment.)*
@@ -58,7 +59,7 @@ Transcription runs entirely on your machine. Application logs record events and 
 
 ## Project status / reprise
 
-Current release: **v1.2.0**. After a machine reinstall, see [`docs/REPRISE.md`](docs/REPRISE.md) for the stop point, restore steps, and the open v1.2 test checklist. Copy `config.example.json` to `config.json` for a starting config.
+Current release line: **v1.3.0** (in-app updater for the packaged EXE). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). After a machine reinstall, see [`docs/REPRISE.md`](docs/REPRISE.md). Copy `config.example.json` to `config.json` for a starting config.
 
 ## Support
 
