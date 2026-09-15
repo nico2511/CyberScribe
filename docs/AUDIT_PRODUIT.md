@@ -1,7 +1,7 @@
 # Audit produit — CyberScribe
 
 Date : **2026-09-15**  
-Version auditée : **1.3.0** (branche de travail incluant l’updater installateur)
+Version auditée : **1.4.0** (updater EXE, installateur Inno, dossier modèles configurable)
 
 ## Synthèse
 
@@ -12,9 +12,10 @@ CyberScribe est une application Windows **locale** de dictée vocale → texte, 
 | Proposition de valeur | Claire : offline, confidentialité, simplicité F8 |
 | Maturité technique (v1.2+) | Bonne : mutex, config validée, shutdown propre, CI |
 | Dette / complexité | Faible volume de fichiers, logique lisible |
-| Distribution | Release GitHub ; pas d’installateur MSI/Inno (portable EXE) |
+| Distribution | Release GitHub : EXE portable + installateur Inno Setup |
 | Mises à jour (avant v1.3) | Manuelles (re-téléchargement) |
-| Mises à jour (v1.3) | **Updater intégré** pour l’EXE packagé |
+| Mises à jour (v1.3+) | **Updater intégré** pour l’EXE packagé |
+| Modèles (v1.4) | `models_dir` dans config ; migration déplacer/copier depuis l’UI |
 
 ## Architecture
 

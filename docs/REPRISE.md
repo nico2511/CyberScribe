@@ -7,7 +7,7 @@ Mis à jour le **2026-09-11**.
 
 | Élément | Valeur |
 |--------|--------|
-| Version code | **1.3.0** (`__version__` dans `CyberScribe.py`) |
+| Version code | **1.4.0** (`__version__` dans `CyberScribe.py`) |
 | Branche | `main` |
 | Dernier commit | `dd0071e` — *fix(core): harden recording, config, and shutdown for v1.2* |
 | Release | [v1.2](https://github.com/nico2511/CyberScribe/releases/tag/v1.2) (`CyberScribe.exe` joint) |
