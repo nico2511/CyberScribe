@@ -15,7 +15,9 @@
 - **Smart device detection**: Automatic CUDA (NVIDIA GPU) or CPU.
 - **Auto-stop safety**: Configurable maximum recording duration.
 - **Single instance**: A second launch is refused so hotkeys do not collide.
-- **In-app updates** (Windows EXE): Optional check against GitHub Releases; downloads and swaps `CyberScribe.exe` in place while keeping `config.json` and `models/`.
+- **In-app updates** (Windows EXE): Optional check against GitHub Releases; downloads and swaps `CyberScribe.exe` in place while keeping `config.json` and your models folder.
+- **Configurable model storage**: Choose where Whisper weights live; moving the folder can migrate existing downloads (move or copy).
+- **Windows installer**: Inno Setup package with separate models directory (default under `%LOCALAPPDATA%`).
 
 ## Requirements
 
