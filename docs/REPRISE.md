@@ -7,7 +7,7 @@ Mis à jour le **2026-09-11**.
 
 | Élément | Valeur |
 |--------|--------|
-| Version code | **1.2.0** (`__version__` dans `CyberScribe.py`) |
+| Version code | **1.4.0** (`__version__` dans `CyberScribe.py`) |
 | Branche | `main` |
 | Dernier commit | `dd0071e` — *fix(core): harden recording, config, and shutdown for v1.2* |
 | Release | [v1.2](https://github.com/nico2511/CyberScribe/releases/tag/v1.2) (`CyberScribe.exe` joint) |
@@ -69,6 +69,7 @@ Rien n’est engagé. Idées possibles si on reprend le produit :
 2. UX : feedback plus clair pendant le chargement / la transcription longue
 3. Packaging : vérifier encore le chemin Silero VAD dans le build PyInstaller après maj `faster-whisper`
 4. Docs / store : description GitHub du dépôt, captures à jour si l’UI a bougé
+5. **Updater** : voir `docs/AUDIT_PRODUIT.md` et `updater.py` — tester swap EXE sur Windows après tag `v1.3.0`
 
 ## Fichiers clés
 

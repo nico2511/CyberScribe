@@ -15,6 +15,9 @@
 - **Smart device detection**: Automatic CUDA (NVIDIA GPU) or CPU.
 - **Auto-stop safety**: Configurable maximum recording duration.
 - **Single instance**: A second launch is refused so hotkeys do not collide.
+- **In-app updates** (Windows EXE): Optional check against GitHub Releases; downloads and swaps `CyberScribe.exe` in place while keeping `config.json` and your models folder.
+- **Configurable model storage**: Choose where Whisper weights live; moving the folder can migrate existing downloads (move or copy).
+- **Windows installer**: Inno Setup package with separate models directory (default under `%LOCALAPPDATA%`).
 
 ## Requirements
 
@@ -35,14 +38,16 @@ python CyberScribe.py
 
 ```bash
 pip install -r requirements.txt pyinstaller
-pyinstaller --noconsole --onefile --noconfirm --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "venv\Lib\site-packages\faster_whisper\assets\silero_vad_v6.onnx;faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
+pyinstaller --noconsole --onefile --noconfirm --hidden-import=updater --hidden-import=models_storage --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "venv\Lib\site-packages\faster_whisper\assets\silero_vad_v6.onnx;faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
 ```
 
 *(Adjust the path to `silero_vad_v6.onnx` according to your Python environment.)*
 
 ## CI/CD (Automated Builds)
 
-This repository uses **GitHub Actions**. Pushing a `v*` tag builds `CyberScribe.exe` on Windows and attaches it to the GitHub Release.
+This repository uses **GitHub Actions**. Pushing a `v*` tag builds `CyberScribe.exe`, an **Inno Setup** installer (`CyberScribe-Setup-<version>.exe`), and SHA256 sidecars on Windows, then attaches them to the GitHub Release.
+
+The installer lets you pick the install folder and the **Whisper models directory** (default `%LOCALAPPDATA%\CyberScribe\models`). You can change the models path later in Configuration; existing downloads can be **moved or copied** to the new folder.
 
 ## Usage
 
@@ -58,7 +63,7 @@ Transcription runs entirely on your machine. Application logs record events and 
 
 ## Project status / reprise
 
-Current release: **v1.2.0**. After a machine reinstall, see [`docs/REPRISE.md`](docs/REPRISE.md) for the stop point, restore steps, and the open v1.2 test checklist. Copy `config.example.json` to `config.json` for a starting config.
+Current release line: **v1.4.0** (configurable models folder, Inno installer, in-app EXE updater). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). After a machine reinstall, see [`docs/REPRISE.md`](docs/REPRISE.md). Copy `config.example.json` to `config.json` for a starting config.
 
 ## Support
 

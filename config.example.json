@@ -5,5 +5,7 @@
     "device": "auto",
     "compute_type": "int8",
     "transcription_profile": "fast",
-    "max_record_seconds": 25
+    "max_record_seconds": 25,
+    "check_updates": true,
+    "models_dir": "%LOCALAPPDATA%\\CyberScribe\\models"
 }
