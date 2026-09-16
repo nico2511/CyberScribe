@@ -30,9 +30,9 @@ import glob
 import ctypes
 from io import BytesIO
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import filedialog, ttk, messagebox
 
-__version__ = "1.2.0"
+__version__ = "1.4.0"
 APP_MUTEX_NAME = "Global\\CyberScribeSingleInstance"
 ERROR_ALREADY_EXISTS = 183
 
@@ -41,9 +41,6 @@ if getattr(sys, "frozen", False):
     APP_DIR = os.path.dirname(sys.executable)
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
-
-MODELS_DIR = os.path.join(APP_DIR, "models")
-os.makedirs(MODELS_DIR, exist_ok=True)
 
 # Configure Logging (privacy-conscious: no transcription content logged)
 LOG_FILE = os.path.join(APP_DIR, "debug_CyberScribe.log")
@@ -150,6 +147,48 @@ except ImportError as e:
     )
     sys.exit(1)
 
+try:
+    from models_storage import (
+        canonical_models_dir_config,
+        directory_has_model_files,
+        ensure_models_dir,
+        migrate_models_directory,
+        resolve_models_dir,
+    )
+except ImportError:
+    def resolve_models_dir(app_dir, models_dir_config=None):
+        return os.path.normpath(os.path.join(app_dir, "models"))
+
+    def ensure_models_dir(path):
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def canonical_models_dir_config(resolved_path, app_dir):
+        return resolved_path
+
+    def directory_has_model_files(path):
+        return False
+
+    def migrate_models_directory(source_dir, dest_dir, move=True):
+        return False, "models_storage unavailable"
+
+try:
+    from updater import (
+        check_for_update,
+        cleanup_staging,
+        download_release_exe,
+        is_frozen_build,
+        launch_apply_and_exit,
+    )
+except ImportError:
+    check_for_update = None
+    download_release_exe = None
+    launch_apply_and_exit = None
+    cleanup_staging = None
+
+    def is_frozen_build():
+        return bool(getattr(sys, "frozen", False))
+
 # ==================================================================================
 # ASSETS (BASE64)
 # ==================================================================================
@@ -250,6 +289,8 @@ DEFAULT_CONFIG = {
     "compute_type": "int8",
     "transcription_profile": "fast",
     "max_record_seconds": 25,
+    "check_updates": True,
+    "models_dir": "",
 }
 ALLOWED_KEYS = set(DEFAULT_CONFIG.keys())
 
@@ -345,6 +386,20 @@ def sanitize_config(data):
     except (TypeError, ValueError):
         max_seconds = DEFAULT_CONFIG["max_record_seconds"]
     cfg["max_record_seconds"] = max(0, min(max_seconds, MAX_RECORD_SECONDS_CAP))
+
+    check_updates = cfg.get("check_updates")
+    if isinstance(check_updates, bool):
+        cfg["check_updates"] = check_updates
+    elif isinstance(check_updates, str):
+        cfg["check_updates"] = check_updates.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        cfg["check_updates"] = bool(DEFAULT_CONFIG["check_updates"])
+
+    models_dir = cfg.get("models_dir")
+    if models_dir is None:
+        cfg["models_dir"] = ""
+    else:
+        cfg["models_dir"] = str(models_dir).strip()[:512]
     return cfg
 
 
@@ -397,9 +452,14 @@ class ConfigManager:
 
     def get(self, key):
         val = self.config.get(key)
+        if key == "models_dir":
+            return val if val is not None else ""
         if val is None or val == "":
             return DEFAULT_CONFIG.get(key)
         return val
+
+    def get_models_dir(self):
+        return ensure_models_dir(resolve_models_dir(APP_DIR, self.get("models_dir")))
 
     def set(self, key, value):
         self.config[key] = value
@@ -557,9 +617,11 @@ class Transcriber:
             else:
                 compute_type = "int8" if compute_pref in ("int8_float16", "float16") else compute_pref
 
+            models_dir = self.config.get_models_dir()
             log(f"Loading Whisper Model ({model_size}) on {device} ({compute_type})...")
+            log(f"Model storage: {models_dir}")
             self.model = WhisperModel(
-                model_size, device=device, compute_type=compute_type, download_root=MODELS_DIR
+                model_size, device=device, compute_type=compute_type, download_root=models_dir
             )
             log("Model loaded successfully.")
         except Exception as e:
@@ -649,7 +711,17 @@ class CyberScribeApp:
         self.queue = queue.Queue()
         self.hotkey_listener = None
 
+        self._update_checking = False
+        self._update_downloading = False
+        self._pending_update = None
+        self._update_progress = None
+        self._quit_for_update = False
+
+        ensure_models_dir(self.config.get_models_dir())
+
         self.setup_hotkey()
+        if check_for_update and self.config.get("check_updates"):
+            threading.Thread(target=self._background_update_check, daemon=True).start()
 
     def setup_hotkey(self):
         if self.hotkey_listener:
@@ -806,6 +878,142 @@ class CyberScribeApp:
 
     def request_quit(self, icon, item):
         self.queue.put("quit")
+
+    def request_check_updates(self, icon, item):
+        self.queue.put("check_updates")
+
+    def _background_update_check(self):
+        if self._update_checking or not check_for_update:
+            return
+        self._update_checking = True
+        try:
+            time.sleep(8)
+            if not self._running:
+                return
+            result = check_for_update(__version__)
+            if result.update_available and result.latest:
+                self._pending_update = result.latest
+                self.queue.put(("update_available", result.latest.version))
+        except Exception as e:
+            log_error(f"Background update check: {e}")
+        finally:
+            self._update_checking = False
+
+    def _manual_update_check(self):
+        if not check_for_update:
+            messagebox.showinfo(
+                "CyberScribe",
+                "Le module de mise à jour n'est pas disponible dans cette installation.",
+                parent=self.root,
+            )
+            return
+        if self._update_checking:
+            messagebox.showinfo("CyberScribe", "Vérification déjà en cours…", parent=self.root)
+            return
+
+        def _work():
+            self._update_checking = True
+            try:
+                result = check_for_update(__version__)
+                self.queue.put(("update_check_done", result))
+            finally:
+                self._update_checking = False
+
+        threading.Thread(target=_work, daemon=True).start()
+        self._notify("CyberScribe", "Recherche de mises à jour sur GitHub…")
+
+    def _show_update_check_result(self, result):
+        if not result.ok:
+            messagebox.showwarning(
+                "CyberScribe",
+                f"Impossible de vérifier les mises à jour.\n{result.error or 'Erreur inconnue'}",
+                parent=self.root,
+            )
+            return
+        if not result.update_available or not result.latest:
+            messagebox.showinfo(
+                "CyberScribe",
+                f"Vous utilisez la dernière version ({__version__}).",
+                parent=self.root,
+            )
+            return
+        self._pending_update = result.latest
+        self._prompt_install_update(result.latest.version)
+
+    def _prompt_install_update(self, new_version):
+        if not is_frozen_build():
+            messagebox.showinfo(
+                "CyberScribe",
+                f"Version {new_version} disponible sur GitHub.\n"
+                "La mise à jour automatique s'applique uniquement à l'exécutable Windows (CyberScribe.exe).",
+                parent=self.root,
+            )
+            return
+        answer = messagebox.askyesno(
+            "CyberScribe — mise à jour",
+            f"La version {new_version} est disponible (vous êtes en {__version__}).\n\n"
+            "Télécharger et installer maintenant ?\n"
+            "L'application redémarrera après la mise à jour.",
+            parent=self.root,
+        )
+        if answer:
+            self._start_update_download()
+
+    def _start_update_download(self):
+        release = self._pending_update
+        if not release or not download_release_exe:
+            return
+        if self._update_downloading:
+            return
+        self._update_downloading = True
+        self._update_progress = {"done": 0, "total": release.exe_size}
+        self._notify("CyberScribe", f"Téléchargement de la v{release.version}…")
+        self.update_tray_icon(loading=True)
+
+        def _work():
+            try:
+                def on_progress(done, total):
+                    self._update_progress = {"done": done, "total": total}
+
+                path = download_release_exe(release, APP_DIR, __version__, progress=on_progress)
+                self.queue.put(("update_downloaded", path, release.version))
+            except Exception as e:
+                log_error(f"Update download failed: {e}")
+                self.queue.put(("update_download_failed", str(e)))
+            finally:
+                self._update_downloading = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _finish_update_download(self, staging_path, new_version):
+        self.update_tray_icon(loading=False)
+        if not os.path.isfile(staging_path):
+            messagebox.showerror(
+                "CyberScribe",
+                "Fichier de mise à jour introuvable après téléchargement.",
+                parent=self.root,
+            )
+            return
+        answer = messagebox.askyesno(
+            "CyberScribe — mise à jour",
+            f"Téléchargement terminé (v{new_version}).\n"
+            "Installer maintenant et redémarrer CyberScribe ?",
+            parent=self.root,
+        )
+        if not answer:
+            return
+        try:
+            exe_name = os.path.basename(sys.executable)
+            launch_apply_and_exit(APP_DIR, exe_name)
+            self._quit_for_update = True
+            self.queue.put("quit")
+        except Exception as e:
+            log_error(f"Could not launch update script: {e}")
+            messagebox.showerror(
+                "CyberScribe",
+                f"Échec du lancement de la mise à jour :\n{e}",
+                parent=self.root,
+            )
 
     def open_settings_window(self):
         if self.settings_window and self.settings_window.winfo_exists():
@@ -991,19 +1199,74 @@ class CyberScribeApp:
             max_record_var = tk.StringVar(root, value=str(self.config.get("max_record_seconds") or 25))
             create_entry(max_record_var).pack(pady=0, ipadx=5, ipady=3)
 
-            create_label(">> MODEL STORAGE").pack(pady=(12, 2))
-            path_var = tk.StringVar(root, value=MODELS_DIR)
-            tk.Entry(
+            create_label(">> SOFTWARE UPDATES").pack(pady=(12, 2))
+            create_help_text(
+                "Vérifie GitHub Releases pour CyberScribe.exe (connexion Internet requise)."
+            ).pack(pady=(0, 4))
+            check_updates_var = tk.BooleanVar(
+                root, value=bool(self.config.get("check_updates"))
+            )
+
+            def _toggle_check_updates():
+                self.config.set("check_updates", bool(check_updates_var.get()))
+
+            tk.Checkbutton(
                 main_frame,
-                textvariable=path_var,
-                bg=C_INPUT_BG,
-                fg="#94a3b8",
+                text="Vérifier automatiquement au démarrage",
+                variable=check_updates_var,
+                command=_toggle_check_updates,
+                bg=C_BG,
+                fg="#e2e8f0",
+                selectcolor=C_INPUT_BG,
+                activebackground=C_BG,
+                activeforeground="#e2e8f0",
                 font=("Consolas", 9),
+            ).pack(anchor="w", padx=30)
+
+            def _check_updates_ui():
+                self._manual_update_check()
+
+            tk.Button(
+                main_frame,
+                text="[ VÉRIFIER LES MISES À JOUR ]",
+                command=_check_updates_ui,
+                bg="#334155",
+                fg="white",
+                font=("Consolas", 9, "bold"),
                 relief="flat",
-                bd=5,
-                state="readonly",
-                readonlybackground=C_INPUT_BG,
-            ).pack(pady=0, fill="x", padx=30)
+            ).pack(pady=(8, 4), ipadx=8)
+
+            create_label(">> MODEL STORAGE").pack(pady=(12, 2))
+            create_help_text(
+                "Dossier des modèles Whisper. Vide = dossier « models » à côté de l'application."
+            ).pack(pady=(0, 4))
+            path_var = tk.StringVar(root, value=self.config.get_models_dir())
+
+            models_row = tk.Frame(main_frame, bg=C_BG)
+            models_row.pack(fill="x", padx=30, pady=(0, 4))
+            models_entry = create_entry(path_var, parent=models_row)
+            models_entry.pack(side="left", fill="x", expand=True, ipadx=3, ipady=2)
+
+            def _browse_models():
+                initial = path_var.get().strip() or self.config.get_models_dir()
+                chosen = filedialog.askdirectory(
+                    parent=root,
+                    title="Dossier des modèles Whisper",
+                    initialdir=initial if os.path.isdir(initial) else APP_DIR,
+                )
+                if chosen:
+                    path_var.set(os.path.normpath(chosen))
+
+            tk.Button(
+                models_row,
+                text="…",
+                command=_browse_models,
+                bg=C_INPUT_BG,
+                fg=C_ACCENT,
+                font=("Consolas", 10, "bold"),
+                relief="flat",
+                width=3,
+            ).pack(side="left", padx=(6, 0))
 
             def test_rec():
                 self.queue.put("toggle_recording")
@@ -1022,11 +1285,55 @@ class CyberScribeApp:
                 old_model = self.config.get("model_size")
                 old_device = self.config.get("device")
                 old_compute = self.config.get("compute_type")
+                old_models_resolved = self.config.get_models_dir()
 
                 try:
                     max_record = int(max_record_var.get())
                 except Exception:
                     max_record = DEFAULT_CONFIG["max_record_seconds"]
+
+                new_models_input = path_var.get().strip()
+                new_models_resolved = resolve_models_dir(
+                    APP_DIR, new_models_input if new_models_input else None
+                )
+                models_cfg = canonical_models_dir_config(new_models_resolved, APP_DIR)
+
+                if (
+                    os.path.normcase(new_models_resolved) != os.path.normcase(old_models_resolved)
+                    and directory_has_model_files(old_models_resolved)
+                ):
+                    choice = messagebox.askyesnocancel(
+                        "CyberScribe — modèles",
+                        "Le dossier des modèles change.\n\n"
+                        "Déplacer les fichiers existants vers le nouveau dossier ?\n\n"
+                        "Oui = déplacer\nNon = copier\nAnnuler = garder l'ancien dossier",
+                        parent=root,
+                    )
+                    if choice is None:
+                        return
+                    ok, migrate_msg = migrate_models_directory(
+                        old_models_resolved,
+                        new_models_resolved,
+                        move=bool(choice),
+                    )
+                    if not ok:
+                        messagebox.showerror(
+                            "CyberScribe",
+                            f"Migration des modèles impossible :\n{migrate_msg}",
+                            parent=root,
+                        )
+                        return
+                    log(migrate_msg)
+                else:
+                    try:
+                        ensure_models_dir(new_models_resolved)
+                    except OSError as e:
+                        messagebox.showerror(
+                            "CyberScribe",
+                            f"Impossible de créer le dossier des modèles :\n{e}",
+                            parent=root,
+                        )
+                        return
 
                 self.config.update({
                     "hotkey": hk_var.get(),
@@ -1036,6 +1343,7 @@ class CyberScribeApp:
                     "compute_type": compute_var.get(),
                     "transcription_profile": profile_var.get() or "fast",
                     "max_record_seconds": max_record,
+                    "models_dir": models_cfg,
                 })
                 if not self.setup_hotkey():
                     messagebox.showwarning(
@@ -1044,10 +1352,15 @@ class CyberScribeApp:
                         parent=root,
                     )
 
+                models_changed = (
+                    os.path.normcase(self.config.get_models_dir())
+                    != os.path.normcase(old_models_resolved)
+                )
                 model_changed = (
                     self.config.get("model_size") != old_model
                     or self.config.get("device") != old_device
                     or self.config.get("compute_type") != old_compute
+                    or models_changed
                 )
                 if model_changed:
                     self.transcriber.reload()
@@ -1109,10 +1422,15 @@ class CyberScribeApp:
             log_error(f"Splash error: {e}")
 
     def run_tray(self):
-        menu = pystray.Menu(
+        menu_items = [
             pystray.MenuItem("Configuration", self.request_settings),
-            pystray.MenuItem("Quitter", self.request_quit),
-        )
+        ]
+        if check_for_update:
+            menu_items.append(
+                pystray.MenuItem("Vérifier les mises à jour", self.request_check_updates)
+            )
+        menu_items.append(pystray.MenuItem("Quitter", self.request_quit))
+        menu = pystray.Menu(*menu_items)
         self.tray_icon = pystray.Icon(
             "CyberScribe", self.icon_gray, f"CyberScribe v{__version__}", menu
         )
@@ -1147,8 +1465,28 @@ class CyberScribeApp:
                 elif msg == "auto_stop_recording":
                     if self.is_recording:
                         self.stop_recording_action()
+                elif msg == "check_updates":
+                    self._manual_update_check()
                 elif msg == "quit":
                     break
+                elif isinstance(msg, tuple) and msg:
+                    if msg[0] == "update_available" and len(msg) > 1:
+                        self._notify(
+                            "CyberScribe",
+                            f"Mise à jour v{msg[1]} disponible — menu ou Configuration.",
+                        )
+                    elif msg[0] == "update_check_done" and len(msg) > 1:
+                        self._show_update_check_result(msg[1])
+                    elif msg[0] == "update_downloaded" and len(msg) > 2:
+                        self._finish_update_download(msg[1], msg[2])
+                    elif msg[0] == "update_download_failed" and len(msg) > 1:
+                        self.update_tray_icon(loading=False)
+                        self._notify("CyberScribe", "Échec du téléchargement de la mise à jour.")
+                        messagebox.showerror(
+                            "CyberScribe",
+                            f"Téléchargement impossible :\n{msg[1]}",
+                            parent=self.root,
+                        )
             except KeyboardInterrupt:
                 break
         self.stop_app()
@@ -1191,6 +1529,11 @@ class CyberScribeApp:
             self.root.destroy()
         except Exception:
             pass
+        if cleanup_staging and not self._quit_for_update:
+            try:
+                cleanup_staging(APP_DIR)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
