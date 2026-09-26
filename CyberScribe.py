@@ -174,20 +174,42 @@ except ImportError:
 
 try:
     from updater import (
+        Sha256MismatchError,
         check_for_update,
         cleanup_staging,
         download_release_exe,
+        format_sha256_preview,
         is_frozen_build,
+        is_sha256_hex,
         launch_apply_and_exit,
+        local_frozen_exe_sha256,
+        update_prompt_mode,
+        verification_before_download,
     )
 except ImportError:
+    class Sha256MismatchError(Exception):
+        pass
+
     check_for_update = None
     download_release_exe = None
     launch_apply_and_exit = None
     cleanup_staging = None
+    local_frozen_exe_sha256 = None
+    verification_before_download = None
+    update_prompt_mode = None
 
     def is_frozen_build():
         return bool(getattr(sys, "frozen", False))
+
+    def format_sha256_preview(digest):
+        text = (digest or "").strip().lower()
+        if len(text) <= 24:
+            return text
+        return f"{text[:16]}…{text[-8:]}"
+
+    def is_sha256_hex(value):
+        token = (value or "").strip().lower()
+        return len(token) == 64 and all(c in "0123456789abcdef" for c in token)
 
 # ==================================================================================
 # ASSETS (BASE64)
@@ -716,6 +738,9 @@ class CyberScribeApp:
         self._pending_update = None
         self._update_progress = None
         self._quit_for_update = False
+        self._sha_job = 0
+        self._settings_sha_var = None
+        self._settings_sha_hint = None
 
         ensure_models_dir(self.config.get_models_dir())
 
@@ -938,25 +963,334 @@ class CyberScribeApp:
             )
             return
         self._pending_update = result.latest
-        self._prompt_install_update(result.latest.version)
+        self._prompt_install_update(result.latest)
 
-    def _prompt_install_update(self, new_version):
-        if not is_frozen_build():
-            messagebox.showinfo(
-                "CyberScribe",
-                f"Version {new_version} disponible sur GitHub.\n"
-                "La mise à jour automatique s'applique uniquement à l'exécutable Windows (CyberScribe.exe).",
+    def _ui_parent(self):
+        win = self.settings_window
+        try:
+            if win is not None and win.winfo_exists():
+                return win
+        except tk.TclError:
+            pass
+        return self.root
+
+    def _copy_to_clipboard(self, text):
+        if not text:
+            return False
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update_idletasks()
+            return True
+        except Exception:
+            pass
+        try:
+            pyperclip.copy(text)
+            return True
+        except Exception as e:
+            log_error(f"Clipboard copy failed: {e}")
+            return False
+
+    def _checksum_dialog(self, title, message, hashes, *, tone="info", confirm_text="Continuer", cancel_text="Annuler"):
+        """Modal prompt. ``hashes`` is a list of (label, full SHA256). Returns True if confirmed."""
+        parent = self._ui_parent()
+        result = {"ok": False}
+        dialog = tk.Toplevel(parent)
+        dialog.title(title)
+        dialog.configure(bg="#0f172a")
+        dialog.transient(parent)
+        dialog.resizable(False, False)
+        try:
+            dialog.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+
+        accent = {"info": "#06b6d4", "warn": "#f59e0b", "error": "#f43f5e"}.get(tone, "#06b6d4")
+        confirm_fg = "#0f172a" if tone == "warn" else "white"
+        wrap = 480
+
+        frame = tk.Frame(dialog, bg="#0f172a")
+        frame.pack(fill="both", expand=True, padx=16, pady=14)
+
+        tk.Label(
+            frame,
+            text=message,
+            bg="#0f172a",
+            fg="#e2e8f0",
+            font=("Segoe UI", 10),
+            justify="left",
+            wraplength=wrap,
+            anchor="w",
+        ).pack(fill="x", anchor="w")
+
+        copy_status = tk.StringVar(dialog, value="")
+        shown = 0
+        for label, digest in hashes or []:
+            digest = (digest or "").strip().lower()
+            if not is_sha256_hex(digest):
+                continue
+            shown += 1
+            block = tk.Frame(frame, bg="#0f172a")
+            block.pack(fill="x", pady=(12, 0))
+            tk.Label(
+                block,
+                text=f"{label} (aperçu {format_sha256_preview(digest)})",
+                bg="#0f172a",
+                fg=accent,
+                font=("Consolas", 8),
+                anchor="w",
+                justify="left",
+                wraplength=wrap,
+            ).pack(fill="x", anchor="w")
+            row = tk.Frame(block, bg="#0f172a")
+            row.pack(fill="x", pady=(4, 0))
+            entry = tk.Entry(
+                row,
+                bg="#1e293b",
+                fg="#38bdf8",
+                readonlybackground="#1e293b",
+                font=("Consolas", 8),
+                relief="flat",
+                bd=4,
+                width=68,
+            )
+            entry.insert(0, digest)
+            entry.configure(state="readonly")
+            entry.pack(side="left", fill="x", expand=True)
+
+            def _copy(value=digest):
+                if self._copy_to_clipboard(value):
+                    copy_status.set("Empreinte complète copiée.")
+                else:
+                    copy_status.set("Copie impossible.")
+
+            tk.Button(
+                row,
+                text="Copier",
+                command=_copy,
+                bg="#334155",
+                fg="white",
+                font=("Consolas", 8, "bold"),
+                relief="flat",
+            ).pack(side="left", padx=(8, 0))
+
+        if shown:
+            tk.Label(
+                frame,
+                text="Le champ contient l'empreinte complète.",
+                bg="#0f172a",
+                fg="#94a3b8",
+                font=("Consolas", 8),
+                anchor="w",
+            ).pack(fill="x", pady=(6, 0))
+
+        tk.Label(
+            frame,
+            textvariable=copy_status,
+            bg="#0f172a",
+            fg="#94a3b8",
+            font=("Consolas", 8),
+            anchor="w",
+        ).pack(fill="x", pady=(4, 0))
+
+        buttons = tk.Frame(frame, bg="#0f172a")
+        buttons.pack(fill="x", pady=(12, 0))
+
+        def _confirm():
+            result["ok"] = True
+            dialog.destroy()
+
+        def _cancel():
+            result["ok"] = False
+            dialog.destroy()
+
+        if cancel_text:
+            tk.Button(
+                buttons,
+                text=cancel_text,
+                command=_cancel,
+                bg="#334155",
+                fg="white",
+                font=("Consolas", 9),
+                relief="flat",
+                padx=10,
+                pady=4,
+            ).pack(side="right")
+            tk.Button(
+                buttons,
+                text=confirm_text,
+                command=_confirm,
+                bg=accent,
+                fg=confirm_fg,
+                font=("Consolas", 9, "bold"),
+                relief="flat",
+                padx=10,
+                pady=4,
+            ).pack(side="right", padx=(0, 8))
+            dialog.bind("<Escape>", lambda _event: _cancel())
+            dialog.bind("<Return>", lambda _event: _confirm())
+        else:
+            tk.Button(
+                buttons,
+                text=confirm_text,
+                command=_cancel,
+                bg=accent,
+                fg=confirm_fg,
+                font=("Consolas", 9, "bold"),
+                relief="flat",
+                padx=10,
+                pady=4,
+            ).pack(side="right")
+            dialog.bind("<Escape>", lambda _event: _cancel())
+            dialog.bind("<Return>", lambda _event: _cancel())
+
+        dialog.protocol("WM_DELETE_WINDOW", _cancel)
+        dialog.update_idletasks()
+        width = max(dialog.winfo_reqwidth(), 540)
+        height = dialog.winfo_reqheight()
+        screen_w = dialog.winfo_screenwidth()
+        screen_h = dialog.winfo_screenheight()
+        x = max(0, (screen_w - width) // 2)
+        y = max(0, (screen_h - height) // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        try:
+            dialog.grab_set()
+        except tk.TclError:
+            pass
+        dialog.focus_force()
+        dialog.wait_window()
+        return result["ok"]
+
+    def _before_download_copy(self, new_version, verification):
+        mode = update_prompt_mode(verification.status) if update_prompt_mode else "confirm"
+        intro = (
+            f"La version {new_version} est disponible (version installée : {__version__}).\n\n"
+        )
+        if mode == "warn" and verification.status == "sidecar_missing":
+            body = (
+                intro
+                + "Attention : cette release ne publie pas CyberScribe.exe.sha256. "
+                + "Le fichier téléchargé ne pourra pas être vérifié "
+                + "(les versions plus anciennes peuvent ne pas avoir ce fichier). "
+                + "Vous pouvez continuer.\n\n"
+                + "Télécharger quand même ?\n"
+                + "L'application redémarrera après la mise à jour."
+            )
+        elif mode == "warn":
+            body = (
+                intro
+                + "Attention : le sidecar CyberScribe.exe.sha256 est annoncé, mais son contenu n'a pas pu être lu. "
+                + "La somme ne sera pas vérifiée. Vous pouvez continuer.\n\n"
+                + "Télécharger quand même ?\n"
+                + "L'application redémarrera après la mise à jour."
+            )
+        else:
+            body = (
+                intro
+                + "Le fichier CyberScribe.exe.sha256 de la release sera utilisé pour vérifier le téléchargement avant l'installation.\n\n"
+                + "Télécharger et installer maintenant ?\n"
+                + "L'application redémarrera après la mise à jour."
+            )
+        hashes = []
+        if verification.expected:
+            hashes.append(("SHA256 attendu", verification.expected))
+        return body, hashes, mode
+
+    def _after_download_copy(self, new_version, verification):
+        mode = update_prompt_mode(verification.status) if update_prompt_mode else "warn"
+        intro = f"Téléchargement terminé (v{new_version}).\n\n"
+        if verification.status == "verified":
+            body = (
+                intro
+                + "Somme SHA256 vérifiée : le fichier correspond à CyberScribe.exe.sha256 publié avec la release.\n\n"
+                + "Installer maintenant et redémarrer CyberScribe ?"
+            )
+            digest = verification.expected or verification.actual
+            return body, [("SHA256 vérifié", digest)], mode, "Installer et redémarrer"
+        if verification.status == "sidecar_missing":
+            body = (
+                intro
+                + "Attention : cette release n'a pas de fichier CyberScribe.exe.sha256. "
+                + "Le téléchargement n'a pas été vérifié. Vous pouvez tout de même installer.\n\n"
+                + "Installer quand même et redémarrer ?"
+            )
+            return body, [("SHA256 du fichier téléchargé", verification.actual)], mode, "Installer quand même"
+        body = (
+            intro
+            + "Attention : le sidecar CyberScribe.exe.sha256 n'a pas pu être lu. "
+            + "Le téléchargement n'a pas été vérifié. Vous pouvez tout de même installer.\n\n"
+            + "Installer quand même et redémarrer ?"
+        )
+        return body, [("SHA256 du fichier téléchargé", verification.actual)], mode, "Installer quand même"
+
+    def _show_sha_mismatch(self, verification):
+        self.update_tray_icon(loading=False)
+        self._notify("CyberScribe", "Mise à jour refusée : somme SHA256 incorrecte.")
+        hashes = []
+        if verification is not None and verification.expected:
+            hashes.append(("SHA256 attendu (release)", verification.expected))
+        if verification is not None and verification.actual:
+            hashes.append(("SHA256 obtenu (fichier)", verification.actual))
+        self._checksum_dialog(
+            "CyberScribe — mise à jour refusée",
+            "Téléchargement refusé.\n\n"
+            "La somme SHA256 du fichier ne correspond pas à CyberScribe.exe.sha256 publié avec la release. "
+            "L'installation est annulée et le fichier temporaire a été supprimé.",
+            hashes,
+            tone="error",
+            confirm_text="Fermer",
+            cancel_text=None,
+        )
+
+    def _prompt_install_update(self, release):
+        new_version = release.version
+        verification = (
+            verification_before_download(release) if verification_before_download else None
+        )
+        if verification is None:
+            if not is_frozen_build():
+                messagebox.showinfo(
+                    "CyberScribe",
+                    f"Version {new_version} disponible sur GitHub.\n"
+                    "La mise à jour automatique s'applique uniquement à l'exécutable Windows (CyberScribe.exe).",
+                    parent=self.root,
+                )
+                return
+            answer = messagebox.askyesno(
+                "CyberScribe — mise à jour",
+                f"La version {new_version} est disponible (vous êtes en {__version__}).\n\n"
+                "Télécharger et installer maintenant ?\n"
+                "L'application redémarrera après la mise à jour.",
                 parent=self.root,
             )
+            if answer:
+                self._start_update_download()
             return
-        answer = messagebox.askyesno(
+
+        body, hashes, mode = self._before_download_copy(new_version, verification)
+        tone = "warn" if mode == "warn" else "info"
+        if not is_frozen_build():
+            body += (
+                "\n\nLa mise à jour automatique s'applique uniquement à l'exécutable Windows (CyberScribe.exe)."
+            )
+            self._checksum_dialog(
+                "CyberScribe — mise à jour",
+                body,
+                hashes,
+                tone=tone,
+                confirm_text="Fermer",
+                cancel_text=None,
+            )
+            return
+        confirm = "Continuer quand même" if mode == "warn" else "Télécharger"
+        if self._checksum_dialog(
             "CyberScribe — mise à jour",
-            f"La version {new_version} est disponible (vous êtes en {__version__}).\n\n"
-            "Télécharger et installer maintenant ?\n"
-            "L'application redémarrera après la mise à jour.",
-            parent=self.root,
-        )
-        if answer:
+            body,
+            hashes,
+            tone=tone,
+            confirm_text=confirm,
+            cancel_text="Annuler",
+        ):
             self._start_update_download()
 
     def _start_update_download(self):
@@ -975,8 +1309,23 @@ class CyberScribeApp:
                 def on_progress(done, total):
                     self._update_progress = {"done": done, "total": total}
 
-                path = download_release_exe(release, APP_DIR, __version__, progress=on_progress)
-                self.queue.put(("update_downloaded", path, release.version))
+                downloaded = download_release_exe(
+                    release, APP_DIR, __version__, progress=on_progress
+                )
+                self.queue.put(
+                    (
+                        "update_downloaded",
+                        downloaded.path,
+                        release.version,
+                        downloaded.verification,
+                    )
+                )
+            except Sha256MismatchError as e:
+                log_error(
+                    "Update download rejected: SHA256 mismatch "
+                    f"(expected {e.verification.expected}, actual {e.verification.actual})"
+                )
+                self.queue.put(("update_sha_mismatch", e.verification))
             except Exception as e:
                 log_error(f"Update download failed: {e}")
                 self.queue.put(("update_download_failed", str(e)))
@@ -985,7 +1334,7 @@ class CyberScribeApp:
 
         threading.Thread(target=_work, daemon=True).start()
 
-    def _finish_update_download(self, staging_path, new_version):
+    def _finish_update_download(self, staging_path, new_version, verification=None):
         self.update_tray_icon(loading=False)
         if not os.path.isfile(staging_path):
             messagebox.showerror(
@@ -994,13 +1343,30 @@ class CyberScribeApp:
                 parent=self.root,
             )
             return
-        answer = messagebox.askyesno(
+        if verification is not None and update_prompt_mode and update_prompt_mode(verification.status) == "block":
+            self._show_sha_mismatch(verification)
+            return
+        if verification is None:
+            body = (
+                f"Téléchargement terminé (v{new_version}).\n\n"
+                "Le statut de vérification SHA256 est indisponible. "
+                "Vous pouvez continuer l'installation.\n\n"
+                "Installer quand même et redémarrer ?"
+            )
+            hashes = []
+            tone = "warn"
+            confirm = "Installer quand même"
+        else:
+            body, hashes, mode, confirm = self._after_download_copy(new_version, verification)
+            tone = "warn" if mode == "warn" else "info"
+        if not self._checksum_dialog(
             "CyberScribe — mise à jour",
-            f"Téléchargement terminé (v{new_version}).\n"
-            "Installer maintenant et redémarrer CyberScribe ?",
-            parent=self.root,
-        )
-        if not answer:
+            body,
+            hashes,
+            tone=tone,
+            confirm_text=confirm,
+            cancel_text="Annuler",
+        ):
             return
         try:
             exe_name = os.path.basename(sys.executable)
@@ -1014,6 +1380,52 @@ class CyberScribeApp:
                 f"Échec du lancement de la mise à jour :\n{e}",
                 parent=self.root,
             )
+
+    def _kickoff_local_exe_hash(self, sha_var, hint_var):
+        """Hash the frozen EXE off the UI thread so Configuration stays responsive."""
+        self._sha_job += 1
+        job = self._sha_job
+        self._settings_sha_var = sha_var
+        self._settings_sha_hint = hint_var
+        if not is_frozen_build() or not local_frozen_exe_sha256:
+            hint_var.set(
+                "Uniquement pour l'application packagée (CyberScribe.exe). "
+                "Ce mode script n'a pas d'exécutable figé."
+            )
+            return
+        hint_var.set("Calcul en cours…")
+
+        def _work():
+            digest = None
+            error = None
+            try:
+                digest = local_frozen_exe_sha256()
+                if not digest:
+                    error = "unavailable"
+            except Exception as e:
+                log_error(f"Local EXE SHA256 failed: {e}")
+                error = "failed"
+            self.queue.put(("local_exe_sha256", job, digest, error))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _apply_local_exe_sha256(self, job, digest, error):
+        if job != self._sha_job:
+            return
+        var = self._settings_sha_var
+        hint = self._settings_sha_hint
+        if var is None or hint is None:
+            return
+        try:
+            if digest and is_sha256_hex(digest):
+                var.set(digest.lower())
+                hint.set("Calcul local terminé. Sélectionnez le champ ou utilisez Copier.")
+            else:
+                var.set("")
+                if error:
+                    hint.set("Calcul impossible pour cet exécutable.")
+        except tk.TclError:
+            pass
 
     def open_settings_window(self):
         if self.settings_window and self.settings_window.winfo_exists():
@@ -1201,7 +1613,9 @@ class CyberScribeApp:
 
             create_label(">> SOFTWARE UPDATES").pack(pady=(12, 2))
             create_help_text(
-                "Vérifie GitHub Releases pour CyberScribe.exe (connexion Internet requise)."
+                "Recherche facultative d'une version plus récente sur GitHub Releases. "
+                "Aucun texte dicté n'est envoyé. Quand la release publie CyberScribe.exe.sha256, "
+                "le fichier téléchargé est comparé à cette somme avant l'installation."
             ).pack(pady=(0, 4))
             check_updates_var = tk.BooleanVar(
                 root, value=bool(self.config.get("check_updates"))
@@ -1222,6 +1636,10 @@ class CyberScribeApp:
                 activeforeground="#e2e8f0",
                 font=("Consolas", 9),
             ).pack(anchor="w", padx=30)
+            create_help_text(
+                "Au démarrage, une notification indique qu'une mise à jour est disponible. "
+                "Rien n'est installé sans confirmation."
+            ).pack(anchor="w", padx=30, pady=(2, 4))
 
             def _check_updates_ui():
                 self._manual_update_check()
@@ -1235,6 +1653,72 @@ class CyberScribeApp:
                 font=("Consolas", 9, "bold"),
                 relief="flat",
             ).pack(pady=(8, 4), ipadx=8)
+
+            tk.Label(
+                main_frame,
+                text="SHA256 de cet exécutable",
+                bg=C_BG,
+                fg="#e2e8f0",
+                font=("Consolas", 9),
+            ).pack(anchor="w", padx=30, pady=(8, 2))
+            create_help_text(
+                "Empreinte de l'exécutable en cours d'exécution, calculée sur cet ordinateur."
+            ).pack(anchor="w", padx=30, pady=(0, 4))
+
+            sha_var = tk.StringVar(root, value="")
+            sha_hint = tk.StringVar(root, value="")
+            sha_row = tk.Frame(main_frame, bg=C_BG)
+            sha_row.pack(fill="x", padx=30, pady=(0, 2))
+            sha_entry = tk.Entry(
+                sha_row,
+                textvariable=sha_var,
+                bg=C_INPUT_BG,
+                fg=C_INPUT_FG,
+                readonlybackground=C_INPUT_BG,
+                disabledbackground=C_INPUT_BG,
+                disabledforeground="#64748b",
+                font=("Consolas", 8),
+                relief="flat",
+                bd=4,
+            )
+            sha_entry.configure(state="readonly")
+            sha_entry.pack(side="left", fill="x", expand=True, ipady=2)
+
+            def _copy_local_sha():
+                value = sha_var.get().strip().lower()
+                if not is_sha256_hex(value):
+                    if not is_frozen_build():
+                        sha_hint.set(
+                            "Uniquement pour l'application packagée (CyberScribe.exe). "
+                            "Ce mode script n'a pas d'exécutable figé."
+                        )
+                    else:
+                        sha_hint.set("Empreinte pas encore disponible.")
+                    return
+                if self._copy_to_clipboard(value):
+                    sha_hint.set("Copié dans le presse-papiers.")
+                else:
+                    sha_hint.set("Copie impossible.")
+
+            tk.Button(
+                sha_row,
+                text="Copier",
+                command=_copy_local_sha,
+                bg="#334155",
+                fg="white",
+                font=("Consolas", 8, "bold"),
+                relief="flat",
+            ).pack(side="left", padx=(6, 0))
+            tk.Label(
+                main_frame,
+                textvariable=sha_hint,
+                bg=C_BG,
+                fg="#94a3b8",
+                font=("Consolas", 8),
+                justify="left",
+                wraplength=400,
+            ).pack(anchor="w", padx=30, pady=(2, 4))
+            self._kickoff_local_exe_hash(sha_var, sha_hint)
 
             create_label(">> MODEL STORAGE").pack(pady=(12, 2))
             create_help_text(
@@ -1477,8 +1961,14 @@ class CyberScribeApp:
                         )
                     elif msg[0] == "update_check_done" and len(msg) > 1:
                         self._show_update_check_result(msg[1])
+                    elif msg[0] == "update_downloaded" and len(msg) > 3:
+                        self._finish_update_download(msg[1], msg[2], msg[3])
                     elif msg[0] == "update_downloaded" and len(msg) > 2:
-                        self._finish_update_download(msg[1], msg[2])
+                        self._finish_update_download(msg[1], msg[2], None)
+                    elif msg[0] == "update_sha_mismatch" and len(msg) > 1:
+                        self._show_sha_mismatch(msg[1])
+                    elif msg[0] == "local_exe_sha256" and len(msg) > 3:
+                        self._apply_local_exe_sha256(msg[1], msg[2], msg[3])
                     elif msg[0] == "update_download_failed" and len(msg) > 1:
                         self.update_tray_icon(loading=False)
                         self._notify("CyberScribe", "Échec du téléchargement de la mise à jour.")

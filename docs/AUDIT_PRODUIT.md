@@ -1,7 +1,7 @@
 # Audit produit — CyberScribe
 
-Date : **2026-09-15**  
-Version auditée : **1.4.0** (updater EXE, installateur Inno, dossier modèles configurable)
+Date : **2026-09-15** (complément **2026-09-26** : sommes SHA256 visibles)  
+Version auditée : **1.4.0** (updater EXE, installateur Inno, dossier modèles configurable). Le complément checksum ne change pas `__version__` : travail post-1.4 vers la ligne 1.5, sans tag de release.
 
 ## Synthèse
 
@@ -64,7 +64,6 @@ Config atomique (config.json à côté de l’EXE)
 
 - Checklist de tests manuels v1.2/v1.3 sur machine Windows réelle.
 - Signature code, installateur MSI, canal beta.
-- Checksum affiché dans l’UI (déjà vérifié côté téléchargement si `.sha256` en release).
 
 ## Updater installateur (v1.3) — conception
 
@@ -95,15 +94,26 @@ Un processus ne peut pas remplacer son propre fichier `.exe` en cours d’exécu
 
 - Téléchargement **uniquement** depuis l’API release (URL d’asset GitHub).
 - Taille minimale de fichier (garde-fou anti-page d’erreur HTML).
-- SHA-256 si le sidecar est publié (CI v1.3+).
+- SHA-256 si le sidecar est publié (CI v1.3+). Le résultat (empreinte attendue, empreinte réelle, sidecar présent, vérifié ou non) est renvoyé par le téléchargement ; l’UI ne recalcule pas la somme de son côté.
+- URL demandées limitées à `https://github.com/nico2511/CyberScribe/releases/download/…` (la redirection CDN reste gérée par le client HTTP).
 - Pas de téléchargement arbitraire d’URL utilisateur.
+- Sidecar absent ou illisible : avertissement, installation encore possible. Écart de somme : fichier rejeté.
+
+### Sommes SHA256 dans l’UI (post-1.4, vers 1.5)
+
+`__version__` reste **1.4.0**.
+
+- Avant téléchargement et avant installation, l’invite montre l’empreinte (aperçu + champ complet copiable) et le statut : vérifiée, sidecar absent, ou illisible.
+- Écart SHA256 : dialogue d’erreur, installation annulée (comportement de rejet inchangé, désormais visible).
+- Configuration → Software updates : SHA256 de l’EXE figé, calculé hors du thread Tk, avec copie. En mode script, un texte indique qu’il n’y a pas d’exécutable à mesurer.
+- Aucun texte dicté n’est journalisé ni conservé.
 
 ### UX
 
-- Case « Vérifier automatiquement au démarrage » (`check_updates` dans `config.json`).
+- Case « Vérifier automatiquement au démarrage » (`check_updates` dans `config.json`), avec une aide qui précise que rien n’est installé sans confirmation.
 - Entrée menu tray + bouton dans Configuration.
 - Notification tray si une version plus récente est détectée (check différé ~8 s après démarrage).
-- En mode `python CyberScribe.py` : consultation des versions possible, **pas** de swap d’EXE.
+- En mode `python CyberScribe.py` : consultation des versions et de l’empreinte de release possible, **pas** de swap d’EXE.
 
 ### Fichiers
 

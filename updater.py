@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -42,6 +43,8 @@ class ReleaseInfo:
     sha256_url: Optional[str]
     release_page: str
     notes: str
+    # Populated at check time when the sidecar can be read. Download verifies again.
+    expected_sha256: Optional[str] = None
 
 
 @dataclass
@@ -51,6 +54,85 @@ class UpdateCheckResult:
     latest: Optional[ReleaseInfo] = None
     update_available: bool = False
     error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class Sha256Verification:
+    """Checksum state for a GitHub release asset.
+
+    ``status`` is one of:
+    - ``verified``: sidecar present and the file matches it
+    - ``pending``: sidecar hash known, file not hashed yet (pre-download)
+    - ``sidecar_missing``: release has no ``CyberScribe.exe.sha256`` asset
+    - ``sidecar_unreadable``: asset listed, but the hash could not be read
+    - ``mismatch``: file hash differs from the sidecar (download is rejected)
+    """
+
+    sidecar_present: bool
+    expected: Optional[str] = None
+    actual: Optional[str] = None
+    verified: bool = False
+
+    @property
+    def status(self) -> str:
+        expected = (self.expected or "").lower()
+        actual = (self.actual or "").lower()
+        if (
+            self.verified
+            and self.sidecar_present
+            and expected
+            and actual
+            and expected == actual
+        ):
+            return "verified"
+        if self.sidecar_present and expected and actual and expected != actual:
+            return "mismatch"
+        if not self.sidecar_present:
+            return "sidecar_missing"
+        if expected and not actual:
+            return "pending"
+        return "sidecar_unreadable"
+
+
+@dataclass(frozen=True)
+class DownloadResult:
+    path: str
+    verification: Sha256Verification
+
+
+class Sha256MismatchError(ValueError):
+    """Downloaded EXE does not match the release sidecar. The file is discarded."""
+
+    def __init__(self, verification: Sha256Verification):
+        self.verification = verification
+        super().__init__("SHA256 mismatch for downloaded executable.")
+
+
+def format_sha256_preview(digest: Optional[str]) -> str:
+    """Short form of a SHA256 hex digest. The full value stays available to copy."""
+    text = (digest or "").strip().lower()
+    if len(text) <= 24:
+        return text
+    return f"{text[:16]}…{text[-8:]}"
+
+
+def is_sha256_hex(value: Optional[str]) -> bool:
+    token = (value or "").strip().lower()
+    return bool(token) and _normalize_sha256(token) == token
+
+
+def update_prompt_mode(status: str) -> str:
+    """How the install UI should treat a verification status.
+
+    ``confirm`` — proceed with the normal prompt (verified, or hash pending).
+    ``warn`` — sidecar missing or unreadable; the user may still continue.
+    ``block`` — mismatch; do not install.
+    """
+    if status == "mismatch":
+        return "block"
+    if status in ("verified", "pending"):
+        return "confirm"
+    return "warn"
 
 
 def parse_version(version: str) -> tuple[int, ...]:
@@ -109,6 +191,60 @@ def _pick_asset(assets: list, name: str) -> Optional[dict]:
     return None
 
 
+def _normalize_sha256(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    token = value.strip().split()[0].strip().lower()
+    if re.fullmatch(r"[a-f0-9]{64}", token):
+        return token
+    return None
+
+
+def _require_release_asset_url(url: str) -> None:
+    """Allow only this repo's GitHub release download URLs.
+
+    The request URL stays on github.com/.../releases/download/. urllib follows the
+    objects.githubusercontent.com redirect itself; that CDN host is not accepted
+    as a URL we choose to fetch.
+    """
+    parsed = urllib.parse.urlparse(url or "")
+    host = (parsed.hostname or "").lower()
+    path = urllib.parse.unquote(parsed.path or "")
+    if parsed.scheme != "https" or parsed.username or parsed.password:
+        raise ValueError("Release asset URL must be HTTPS.")
+    release_path = f"/{GITHUB_REPO}/releases/download/"
+    segments = [segment for segment in path.split("/") if segment]
+    if host == "github.com" and path.startswith(release_path) and ".." not in segments:
+        return
+    raise ValueError("Refusing download outside GitHub release assets.")
+
+
+def make_sha256_verification(
+    *,
+    sidecar_present: bool,
+    expected: Optional[str],
+    actual: Optional[str],
+) -> Sha256Verification:
+    exp = _normalize_sha256(expected) if sidecar_present else None
+    act = _normalize_sha256(actual)
+    verified = bool(sidecar_present and exp and act and exp == act)
+    return Sha256Verification(
+        sidecar_present=bool(sidecar_present),
+        expected=exp,
+        actual=act,
+        verified=verified,
+    )
+
+
+def verification_before_download(release: ReleaseInfo) -> Sha256Verification:
+    """Checksum details known from the release check, before the EXE is saved."""
+    return make_sha256_verification(
+        sidecar_present=bool(release.sha256_url),
+        expected=release.expected_sha256,
+        actual=None,
+    )
+
+
 def fetch_latest_release(app_version: str) -> ReleaseInfo:
     raw = _api_request(RELEASES_LATEST_URL, app_version)
     data = json.loads(raw.decode("utf-8"))
@@ -119,6 +255,14 @@ def fetch_latest_release(app_version: str) -> ReleaseInfo:
 
     sha_name = EXE_ASSET_NAME + SHA256_ASSET_SUFFIX
     sha_asset = _pick_asset(assets, sha_name)
+    sha256_url = sha_asset.get("browser_download_url") if sha_asset else None
+    expected_sha256 = None
+    if sha256_url:
+        try:
+            expected_sha256 = _fetch_expected_sha256(sha256_url, app_version)
+        except ValueError:
+            logging.warning("Ignoring SHA256 sidecar URL outside GitHub release assets")
+            expected_sha256 = None
 
     tag = data.get("tag_name") or ""
     version = _normalize_tag(tag)
@@ -127,9 +271,10 @@ def fetch_latest_release(app_version: str) -> ReleaseInfo:
         tag=tag,
         exe_url=exe_asset["browser_download_url"],
         exe_size=exe_asset.get("size"),
-        sha256_url=sha_asset.get("browser_download_url") if sha_asset else None,
+        sha256_url=sha256_url,
         release_page=data.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases/latest",
         notes=(data.get("body") or "").strip(),
+        expected_sha256=expected_sha256,
     )
 
 
@@ -171,6 +316,7 @@ def _download_file(
     progress: Optional[Callable[[int, Optional[int]], None]] = None,
     timeout: float = 300.0,
 ) -> None:
+    _require_release_asset_url(url)
     req = urllib.request.Request(url, headers={"User-Agent": _user_agent(app_version)}, method="GET")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         total = resp.headers.get("Content-Length")
@@ -189,19 +335,20 @@ def _download_file(
 
 
 def _fetch_expected_sha256(url: str, app_version: str) -> Optional[str]:
+    _require_release_asset_url(url)
     try:
         raw = _api_request(url, app_version, timeout=30.0)
         text = raw.decode("utf-8", errors="replace").strip()
-        # Accept bare hex or "HASH  filename" (certutil-style)
-        token = text.split()[0].strip().lower()
-        if re.fullmatch(r"[a-f0-9]{64}", token):
-            return token
+        # Accept bare hex or "HASH  filename" (certutil / Get-FileHash style)
+        return _normalize_sha256(text)
+    except ValueError:
+        raise
     except Exception:
         logging.warning("Could not fetch SHA256 sidecar from release")
     return None
 
 
-def _file_sha256(path: str) -> str:
+def file_sha256(path: str) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
@@ -209,13 +356,34 @@ def _file_sha256(path: str) -> str:
     return h.hexdigest()
 
 
+def _file_sha256(path: str) -> str:
+    return file_sha256(path)
+
+
+def local_frozen_exe_sha256() -> Optional[str]:
+    """SHA256 of the running PyInstaller EXE, or None when not a frozen build."""
+    if not is_frozen_build():
+        return None
+    return file_sha256(sys.executable)
+
+
 def download_release_exe(
     release: ReleaseInfo,
     app_dir: str,
     app_version: str,
     progress: Optional[Callable[[int, Optional[int]], None]] = None,
-) -> str:
-    """Download the release EXE to CyberScribe.update.exe in app_dir. Returns path."""
+) -> DownloadResult:
+    """Download the release EXE to CyberScribe.update.exe in app_dir.
+
+    The returned verification is the source of truth for the UI: expected hash,
+    actual hash, whether the sidecar was published, and whether it matched.
+    A mismatch deletes the download and raises ``Sha256MismatchError``.
+    A missing or unreadable sidecar does not block; the caller should warn.
+    """
+    _require_release_asset_url(release.exe_url)
+    if release.sha256_url:
+        _require_release_asset_url(release.sha256_url)
+
     os.makedirs(app_dir, exist_ok=True)
     dest = os.path.join(app_dir, UPDATE_STAGING_NAME)
     tmp_fd, tmp_path = tempfile.mkstemp(prefix="cyberscribe_dl_", suffix=".exe", dir=app_dir)
@@ -226,12 +394,17 @@ def download_release_exe(
         if size < MIN_EXE_BYTES:
             raise ValueError(f"Downloaded file too small ({size} bytes); aborting.")
 
+        actual = file_sha256(tmp_path)
+        expected = None
         if release.sha256_url:
             expected = _fetch_expected_sha256(release.sha256_url, app_version)
-            if expected:
-                actual = _file_sha256(tmp_path)
-                if actual.lower() != expected.lower():
-                    raise ValueError("SHA256 mismatch for downloaded executable.")
+        verification = make_sha256_verification(
+            sidecar_present=bool(release.sha256_url),
+            expected=expected,
+            actual=actual,
+        )
+        if verification.status == "mismatch":
+            raise Sha256MismatchError(verification)
 
         if os.path.exists(dest):
             try:
@@ -239,7 +412,7 @@ def download_release_exe(
             except OSError:
                 pass
         os.replace(tmp_path, dest)
-        return dest
+        return DownloadResult(path=dest, verification=verification)
     except Exception:
         try:
             if os.path.exists(tmp_path):
