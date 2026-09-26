@@ -15,7 +15,7 @@
 - **Smart device detection**: Automatic CUDA (NVIDIA GPU) or CPU.
 - **Auto-stop safety**: Configurable maximum recording duration.
 - **Single instance**: A second launch is refused so hotkeys do not collide.
-- **In-app updates** (Windows EXE): Optional check against GitHub Releases; downloads and swaps `CyberScribe.exe` in place while keeping `config.json` and your models folder.
+- **In-app updates** (Windows EXE): Optional check against GitHub Releases; downloads and swaps `CyberScribe.exe` in place while keeping `config.json` and your models folder. Install prompts show the release SHA256 (verified when `CyberScribe.exe.sha256` is published; a missing sidecar warns but does not block). Configuration shows this executable's SHA256.
 - **Configurable model storage**: Choose where Whisper weights live; moving the folder can migrate existing downloads (move or copy).
 - **Windows installer**: Inno Setup package with separate models directory (default under `%LOCALAPPDATA%`).
 
@@ -55,7 +55,7 @@ Releases are **not Authenticode-signed** yet, so Windows may show *“Windows pr
 
 1. Download only from the [GitHub Releases](https://github.com/nico2511/CyberScribe/releases) page for this project.
 2. On the SmartScreen dialog: **More info** → **Run anyway** (labels may vary slightly by Windows version).
-3. The in-app updater checks **SHA256** against `CyberScribe.exe.sha256` when that file is published on the release.
+3. The in-app updater checks **SHA256** against `CyberScribe.exe.sha256` when that file is published on the release, and shows the checksum before you install.
 
 Removing the warning for everyone requires a **code-signing certificate** on the EXE and installer (see [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md)).
 
@@ -73,7 +73,7 @@ Transcription runs entirely on your machine. Application logs record events and 
 
 ## Project status
 
-Current release line: **v1.4.0** (configurable models folder, Inno installer, in-app EXE updater). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). Copy `config.example.json` to `config.json` for a starting config.
+Current release line: **v1.5.0** (SHA256 checksums in the update prompts and in Configuration, verified against `CyberScribe.exe.sha256` when that sidecar is published). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). Copy `config.example.json` to `config.json` for a starting config.
 
 ## Support
 
