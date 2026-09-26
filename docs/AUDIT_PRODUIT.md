@@ -1,7 +1,7 @@
 # Audit produit — CyberScribe
 
-Date : **2026-09-15** (complément **2026-09-26** : sommes SHA256 visibles)  
-Version auditée : **1.4.0** (updater EXE, installateur Inno, dossier modèles configurable). Le complément checksum ne change pas `__version__` : travail post-1.4 vers la ligne 1.5, sans tag de release.
+Date : **2026-09-15** (complément **2026-09-26** : sommes SHA256 visibles, **v1.5.0**)  
+Version auditée : **1.5.0** (sommes SHA256 dans les invites de mise à jour et dans Configuration ; updater EXE, installateur Inno, dossier modèles configurable).
 
 ## Synthèse
 
@@ -16,6 +16,7 @@ CyberScribe est une application Windows **locale** de dictée vocale → texte, 
 | Mises à jour (avant v1.3) | Manuelles (re-téléchargement) |
 | Mises à jour (v1.3+) | **Updater intégré** pour l’EXE packagé |
 | Modèles (v1.4) | `models_dir` dans config ; migration déplacer/copier depuis l’UI |
+| Sommes SHA256 (v1.5) | Empreinte visible (EXE local + invites) ; sidecar absent = avertissement, écart = rejet |
 
 ## Architecture
 
@@ -99,9 +100,9 @@ Un processus ne peut pas remplacer son propre fichier `.exe` en cours d’exécu
 - Pas de téléchargement arbitraire d’URL utilisateur.
 - Sidecar absent ou illisible : avertissement, installation encore possible. Écart de somme : fichier rejeté.
 
-### Sommes SHA256 dans l’UI (post-1.4, vers 1.5)
+### Sommes SHA256 dans l’UI (v1.5.0)
 
-`__version__` reste **1.4.0**.
+Contenu principal de la version **1.5.0**.
 
 - Avant téléchargement et avant installation, l’invite montre l’empreinte (aperçu + champ complet copiable) et le statut : vérifiée, sidecar absent, ou illisible.
 - Écart SHA256 : dialogue d’erreur, installation annulée (comportement de rejet inchangé, désormais visible).

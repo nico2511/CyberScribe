@@ -121,19 +121,19 @@ class FetchSidecarTest(unittest.TestCase):
     def test_bare_and_filename_forms(self):
         digest = "ab" * 32
         with mock.patch.object(updater, "_api_request", return_value=digest.upper().encode()):
-            self.assertEqual(updater._fetch_expected_sha256(SHA_URL, "1.4.0"), digest)
+            self.assertEqual(updater._fetch_expected_sha256(SHA_URL, "1.5.0"), digest)
         styled = f"{digest}  CyberScribe.exe\n".encode()
         with mock.patch.object(updater, "_api_request", return_value=styled):
-            self.assertEqual(updater._fetch_expected_sha256(SHA_URL, "1.4.0"), digest)
+            self.assertEqual(updater._fetch_expected_sha256(SHA_URL, "1.5.0"), digest)
 
     def test_invalid_sidecar_is_none(self):
         with mock.patch.object(updater, "_api_request", return_value=b"not-a-hash"):
-            self.assertIsNone(updater._fetch_expected_sha256(SHA_URL, "1.4.0"))
+            self.assertIsNone(updater._fetch_expected_sha256(SHA_URL, "1.5.0"))
 
     def test_refuses_non_release_url(self):
         with mock.patch.object(updater, "_api_request") as api:
             with self.assertRaises(ValueError):
-                updater._fetch_expected_sha256("https://example.invalid/CyberScribe.exe.sha256", "1.4.0")
+                updater._fetch_expected_sha256("https://example.invalid/CyberScribe.exe.sha256", "1.5.0")
             api.assert_not_called()
 
     def test_latest_release_exposes_expected_hash(self):
@@ -161,7 +161,7 @@ class FetchSidecarTest(unittest.TestCase):
             return json.dumps(payload).encode()
 
         with mock.patch.object(updater, "_api_request", side_effect=fake_api):
-            info = fetch_latest_release("1.4.0")
+            info = fetch_latest_release("1.5.0")
         self.assertEqual(info.expected_sha256, digest)
         preview = verification_before_download(info)
         self.assertEqual(preview.status, "pending")
@@ -214,7 +214,7 @@ class DownloadVerificationTest(unittest.TestCase):
         with mock.patch.object(updater, "_download_file", side_effect=self._write_download), mock.patch.object(
             updater, "_fetch_expected_sha256", return_value=self.digest
         ) as fetch:
-            result = download_release_exe(release, self.app_dir, "1.4.0")
+            result = download_release_exe(release, self.app_dir, "1.5.0")
         self.assertIsInstance(result, DownloadResult)
         self.assertTrue(os.path.isfile(result.path))
         self.assertTrue(result.path.endswith("CyberScribe.update.exe"))
@@ -223,14 +223,14 @@ class DownloadVerificationTest(unittest.TestCase):
         self.assertEqual(result.verification.expected, self.digest)
         self.assertEqual(result.verification.actual, self.digest)
         self.assertTrue(result.verification.sidecar_present)
-        fetch.assert_called_once_with(SHA_URL, "1.4.0")
+        fetch.assert_called_once_with(SHA_URL, "1.5.0")
 
     def test_missing_sidecar_keeps_file_and_actual_hash(self):
         release = _release(sha256_url=None)
         with mock.patch.object(updater, "_download_file", side_effect=self._write_download), mock.patch.object(
             updater, "_fetch_expected_sha256"
         ) as fetch:
-            result = download_release_exe(release, self.app_dir, "1.4.0")
+            result = download_release_exe(release, self.app_dir, "1.5.0")
         fetch.assert_not_called()
         self.assertTrue(os.path.isfile(result.path))
         self.assertEqual(result.verification.status, "sidecar_missing")
@@ -244,7 +244,7 @@ class DownloadVerificationTest(unittest.TestCase):
         with mock.patch.object(updater, "_download_file", side_effect=self._write_download), mock.patch.object(
             updater, "_fetch_expected_sha256", return_value=None
         ):
-            result = download_release_exe(release, self.app_dir, "1.4.0")
+            result = download_release_exe(release, self.app_dir, "1.5.0")
         self.assertEqual(result.verification.status, "sidecar_unreadable")
         self.assertFalse(result.verification.verified)
         self.assertEqual(result.verification.actual, self.digest)
@@ -256,7 +256,7 @@ class DownloadVerificationTest(unittest.TestCase):
             updater, "_fetch_expected_sha256", return_value="ab" * 32
         ):
             with self.assertRaises(Sha256MismatchError) as caught:
-                download_release_exe(release, self.app_dir, "1.4.0")
+                download_release_exe(release, self.app_dir, "1.5.0")
         verification = caught.exception.verification
         self.assertEqual(verification.status, "mismatch")
         self.assertEqual(verification.expected, "ab" * 32)
@@ -268,7 +268,7 @@ class DownloadVerificationTest(unittest.TestCase):
         release = _release(exe_url="https://github.com/other/repo/releases/download/v1/CyberScribe.exe")
         with mock.patch.object(updater, "_download_file") as download:
             with self.assertRaises(ValueError):
-                download_release_exe(release, self.app_dir, "1.4.0")
+                download_release_exe(release, self.app_dir, "1.5.0")
             download.assert_not_called()
 
     def test_too_small_file_aborts(self):
@@ -281,16 +281,17 @@ class DownloadVerificationTest(unittest.TestCase):
         release = _release()
         with mock.patch.object(updater, "_download_file", side_effect=write_short):
             with self.assertRaises(ValueError):
-                download_release_exe(release, self.app_dir, "1.4.0")
+                download_release_exe(release, self.app_dir, "1.5.0")
         self.assertFalse(os.path.exists(os.path.join(self.app_dir, "CyberScribe.update.exe")))
 
 
 class ProductPinTest(unittest.TestCase):
-    def test_version_stays_1_4_0_and_ui_mentions_checksum(self):
+    def test_version_is_1_5_0_and_ui_mentions_checksum(self):
         app = os.path.join(ROOT, "CyberScribe.py")
         with open(app, encoding="utf-8") as handle:
             source = handle.read()
-        self.assertIn('__version__ = "1.4.0"', source)
+        self.assertIn('__version__ = "1.5.0"', source)
+        self.assertNotIn('__version__ = "1.4.0"', source)
         self.assertIn("Somme SHA256 vérifiée", source)
         self.assertIn("Continuer quand même", source)
         self.assertIn("Installer quand même", source)

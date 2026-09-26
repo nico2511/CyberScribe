@@ -73,7 +73,7 @@ Transcription runs entirely on your machine. Application logs record events and 
 
 ## Project status
 
-Current release line: **v1.4.0** (configurable models folder, Inno installer, in-app EXE updater). SHA256 is shown in the update UI (post-1.4 work toward 1.5; `__version__` stays 1.4.0 until the next tag). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). Copy `config.example.json` to `config.json` for a starting config.
+Current release line: **v1.5.0** (SHA256 checksums in the update prompts and in Configuration, verified against `CyberScribe.exe.sha256` when that sidecar is published). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). Copy `config.example.json` to `config.json` for a starting config.
 
 ## Support
 
