@@ -286,11 +286,12 @@ class DownloadVerificationTest(unittest.TestCase):
 
 
 class ProductPinTest(unittest.TestCase):
-    def test_version_is_1_5_0_and_ui_mentions_checksum(self):
+    def test_version_is_1_5_1_and_ui_mentions_checksum(self):
         app = os.path.join(ROOT, "CyberScribe.py")
         with open(app, encoding="utf-8") as handle:
             source = handle.read()
-        self.assertIn('__version__ = "1.5.0"', source)
+        self.assertIn('__version__ = "1.5.1"', source)
+        self.assertNotIn('__version__ = "1.5.0"', source)
         self.assertNotIn('__version__ = "1.4.0"', source)
         self.assertIn("Somme SHA256 vérifiée", source)
         self.assertIn("Continuer quand même", source)
@@ -299,6 +300,60 @@ class ProductPinTest(unittest.TestCase):
         self.assertIn("Aucun texte dicté n'est envoyé.", source)
         self.assertNotIn("clipboard history", source.lower())
         self.assertNotIn("transcript store", source.lower())
+
+
+class ApplyScriptTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.app_dir = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_write_apply_script_waits_on_pid_and_avoids_timeout(self):
+        path = updater.write_apply_script(self.app_dir, "CyberScribe.exe", wait_pid=4242)
+        self.assertTrue(os.path.isfile(path))
+        with open(path, encoding="utf-8") as handle:
+            body = handle.read()
+        self.assertIn('PID eq 4242', body)
+        self.assertIn('ping -n 2 127.0.0.1', body)
+        self.assertNotIn("timeout /t", body)
+        self.assertIn("CyberScribe.update.exe", body)
+        self.assertIn('move /y "%NEW%" "%LIVE%"', body)
+        self.assertIn(":swap", body)
+
+    def test_write_apply_script_falls_back_to_image_name(self):
+        path = updater.write_apply_script(self.app_dir, "CyberScribe.exe", wait_pid=None)
+        with open(path, encoding="utf-8") as handle:
+            body = handle.read()
+        self.assertIn('IMAGENAME eq CyberScribe.exe', body)
+        self.assertNotIn("timeout /t", body)
+
+    def test_launch_apply_uses_new_process_group_not_detached(self):
+        calls = []
+
+        def fake_popen(args, **kwargs):
+            calls.append((args, kwargs))
+            return mock.Mock()
+
+        with mock.patch.object(updater.subprocess, "Popen", side_effect=fake_popen), mock.patch.object(
+            updater.sys, "platform", "win32"
+        ), mock.patch.object(updater.os, "getpid", return_value=99):
+            updater.launch_apply_and_exit(self.app_dir, "CyberScribe.exe")
+        self.assertEqual(len(calls), 1)
+        args, kwargs = calls[0]
+        self.assertEqual(args[0], "cmd.exe")
+        self.assertEqual(args[1], "/c")
+        self.assertTrue(args[2].endswith(updater.APPLY_SCRIPT_NAME))
+        flags = kwargs.get("creationflags", 0)
+        create_no_window = getattr(updater.subprocess, "CREATE_NO_WINDOW", 0)
+        create_new_group = getattr(updater.subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        detached = getattr(updater.subprocess, "DETACHED_PROCESS", 0x8)
+        self.assertEqual(flags & create_no_window, create_no_window)
+        self.assertEqual(flags & create_new_group, create_new_group)
+        self.assertEqual(flags & detached, 0)
+        with open(args[2], encoding="utf-8") as handle:
+            self.assertIn('PID eq 99', handle.read())
 
 
 if __name__ == "__main__":

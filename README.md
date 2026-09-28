@@ -73,7 +73,7 @@ Transcription runs entirely on your machine. Application logs record events and 
 
 ## Project status
 
-Current release line: **v1.5.0** (SHA256 checksums in the update prompts and in Configuration, verified against `CyberScribe.exe.sha256` when that sidecar is published). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). Copy `config.example.json` to `config.json` for a starting config.
+Current release line: **v1.5.1** (fix: update apply handoff + single hotkey beep; SHA256 checksums in update prompts and Configuration). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). Copy `config.example.json` to `config.json` for a starting config.
 
 ## Support
 

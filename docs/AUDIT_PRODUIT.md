@@ -1,7 +1,7 @@
 # Audit produit — CyberScribe
 
-Date : **2026-09-15** (complément **2026-09-26** : sommes SHA256 visibles, **v1.5.0**)  
-Version auditée : **1.5.0** (sommes SHA256 dans les invites de mise à jour et dans Configuration ; updater EXE, installateur Inno, dossier modèles configurable).
+Date : **2026-09-15** (complément **2026-09-28** : correctifs apply update + bip unique, **v1.5.1**)  
+Version auditée : **1.5.1** (correctif remplacement EXE après téléchargement ; un seul bip hotkey ; sommes SHA256 dans les invites depuis 1.5.0 ; updater EXE, installateur Inno, dossier modèles configurable).
 
 ## Synthèse
 
@@ -78,12 +78,18 @@ Un processus ne peut pas remplacer son propre fichier `.exe` en cours d’exécu
 
 1. Télécharger `CyberScribe.update.exe` dans le même répertoire que l’EXE live.
 2. Générer `_cyberscribe_apply_update.cmd` qui :
-   - attend la fin du processus `CyberScribe.exe` ;
-   - renomme l’ancien binaire en `.bak` (si présent) ;
+   - attend la fin du **PID** de l’instance qui a lancé la mise à jour (pas seulement le nom d’image) ;
+   - utilise `ping` pour temporiser (évite `timeout`, cassé sous `CREATE_NO_WINDOW`) ;
+   - renomme l’ancien binaire en `.bak` (si présent), avec un nouvel essai si le fichier est encore verrouillé ;
    - promeut le fichier `.update.exe` → `CyberScribe.exe` ;
    - relance l’application ;
    - supprime le script.
-3. L’app lance le `.cmd` en processus détaché puis quitte proprement.
+3. L’app lance le `.cmd` (nouveau groupe de process, sans console), puis force `os._exit` après nettoyage pour que le PID disparaisse vraiment (threads tray/pynput peuvent sinon garder le process vivant).
+
+### Correctifs apply + bip (v1.5.1)
+
+- Remplacement `.update.exe` → `CyberScribe.exe` qui restait bloqué : attente PID, délai sans `timeout`, flags de lancement corrigés, sortie forcée après handoff.
+- Double bip au démarrage/arrêt d’enregistrement : debounce hotkey, `join` du listener avant ré-enregistrement, bip asynchrone, garde anti double start/stop.
 
 ### Source de vérité
 
