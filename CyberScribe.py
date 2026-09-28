@@ -32,7 +32,7 @@ from io import BytesIO
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 APP_MUTEX_NAME = "Global\\CyberScribeSingleInstance"
 ERROR_ALREADY_EXISTS = 183
 
@@ -732,6 +732,7 @@ class CyberScribeApp:
         self.tray_icon = None
         self.queue = queue.Queue()
         self.hotkey_listener = None
+        self._last_hotkey_ts = 0.0
 
         self._update_checking = False
         self._update_downloading = False
@@ -748,13 +749,24 @@ class CyberScribeApp:
         if check_for_update and self.config.get("check_updates"):
             threading.Thread(target=self._background_update_check, daemon=True).start()
 
+    def _stop_hotkey_listener(self):
+        listener = self.hotkey_listener
+        self.hotkey_listener = None
+        if not listener:
+            return
+        try:
+            listener.stop()
+        except Exception:
+            pass
+        # Join so Windows hooks are fully released before a new listener starts
+        # (otherwise F8 can fire twice → double beep).
+        try:
+            listener.join(timeout=1.0)
+        except Exception:
+            pass
+
     def setup_hotkey(self):
-        if self.hotkey_listener:
-            try:
-                self.hotkey_listener.stop()
-            except Exception:
-                pass
-            self.hotkey_listener = None
+        self._stop_hotkey_listener()
 
         raw_hotkey = self.config.get("hotkey")
         formatted_hotkey = format_hotkey(raw_hotkey)
@@ -776,6 +788,12 @@ class CyberScribeApp:
             return False
 
     def on_hotkey_press(self):
+        # pynput can deliver the same hotkey twice on some Windows setups.
+        now = time.monotonic()
+        last = getattr(self, "_last_hotkey_ts", 0.0)
+        if now - last < 0.4:
+            return
+        self._last_hotkey_ts = now
         log("Hotkey detected!")
         self.queue.put("toggle_recording")
 
@@ -786,11 +804,16 @@ class CyberScribeApp:
             self.start_recording_action()
 
     def _beep(self, freq, duration):
-        try:
-            import winsound
-            winsound.Beep(freq, duration)
-        except Exception:
-            pass
+        def _play():
+            try:
+                import winsound
+                winsound.Beep(freq, duration)
+            except Exception:
+                pass
+
+        # Non-blocking: a sync Beep held the UI thread and could stack with a
+        # duplicate hotkey event as a second audible pulse.
+        threading.Thread(target=_play, daemon=True).start()
 
     def _notify(self, title, message):
         if not self.tray_icon:
@@ -802,6 +825,8 @@ class CyberScribeApp:
 
     def start_recording_action(self):
         log("Action: Start Recording")
+        if self.is_recording:
+            return
         if not self.recorder.start():
             self.is_recording = False
             self.update_tray_icon(recording=False)
@@ -831,6 +856,8 @@ class CyberScribeApp:
 
     def stop_recording_action(self):
         log("Action: Stop Recording")
+        if not self.is_recording:
+            return
         self.is_recording = False
         self.update_tray_icon(recording=False)
 
@@ -1370,9 +1397,10 @@ class CyberScribeApp:
             return
         try:
             exe_name = os.path.basename(sys.executable)
-            launch_apply_and_exit(APP_DIR, exe_name)
+            launch_apply_and_exit(APP_DIR, exe_name, wait_pid=os.getpid())
             self._quit_for_update = True
-            self.queue.put("quit")
+            # Give the apply script a tick to start before we tear down.
+            self.root.after(200, lambda: self.queue.put("quit"))
         except Exception as e:
             log_error(f"Could not launch update script: {e}")
             messagebox.showerror(
@@ -2006,8 +2034,7 @@ class CyberScribeApp:
         except Exception:
             pass
         try:
-            if self.hotkey_listener:
-                self.hotkey_listener.stop()
+            self._stop_hotkey_listener()
         except Exception:
             pass
         try:
@@ -2024,6 +2051,11 @@ class CyberScribeApp:
                 cleanup_staging(APP_DIR)
             except Exception:
                 pass
+        # Tray / Whisper / pynput threads can keep the process alive; the apply
+        # script waits on our PID, so force a hard exit after an update handoff.
+        if self._quit_for_update:
+            log("Exiting for update apply…")
+            os._exit(0)
 
 
 if __name__ == "__main__":

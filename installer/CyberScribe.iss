@@ -1,8 +1,8 @@
 ; CyberScribe Windows installer (Inno Setup 6)
-; Build: ISCC.exe /DMyAppVersion=1.5.0 installer\CyberScribe.iss
+; Build: ISCC.exe /DMyAppVersion=1.5.1 installer\CyberScribe.iss
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.5.0"
+  #define MyAppVersion "1.5.1"
 #endif
 
 #define MyAppName "CyberScribe"

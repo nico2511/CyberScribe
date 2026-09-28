@@ -3,7 +3,9 @@ CyberScribe — in-place updater for the PyInstaller Windows executable.
 
 Design constraints (Windows):
 - A running .exe cannot overwrite itself; we download CyberScribe.update.exe beside the
-  live binary and hand off to a short-lived .cmd that waits for exit, swaps files, restarts.
+  live binary and hand off to a short-lived .cmd that waits for our PID to exit, swaps
+  files, restarts. The waiter uses ping delays (timeout.exe is unreliable without a
+  console) and CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP (not DETACHED_PROCESS).
 - Updates apply only when sys.frozen is True (shipped build). Dev runs can still query GitHub.
 """
 
@@ -422,29 +424,67 @@ def download_release_exe(
         raise
 
 
-def write_apply_script(app_dir: str, exe_name: str) -> str:
-    """Create a cmd script that waits for the app to exit, swaps EXE, restarts, self-deletes."""
+def write_apply_script(app_dir: str, exe_name: str, wait_pid: Optional[int] = None) -> str:
+    """Create a cmd script that waits for the app to exit, swaps EXE, restarts, self-deletes.
+
+    Uses ``ping`` for delays (``timeout`` fails under CREATE_NO_WINDOW) and prefers waiting
+    on the specific PID so a stuck or renamed process cannot leave the staging EXE behind.
+    """
     script_path = os.path.join(app_dir, APPLY_SCRIPT_NAME)
     staging = UPDATE_STAGING_NAME
+    # Sanitize for embedding in cmd (exe_name is basename only in normal use).
+    safe_exe = os.path.basename(exe_name).replace('"', "")
+    if not safe_exe:
+        raise ValueError("exe_name is required for the apply script.")
+
+    if wait_pid is not None:
+        try:
+            pid = int(wait_pid)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("wait_pid must be an integer") from exc
+        if pid <= 0:
+            raise ValueError("wait_pid must be a positive PID")
+        wait_filter = f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul'
+    else:
+        wait_filter = (
+            f'tasklist /FI "IMAGENAME eq {safe_exe}" 2>nul | find /I "{safe_exe}" >nul'
+        )
+
     lines = [
         "@echo off",
-        "setlocal",
+        "setlocal EnableExtensions",
         f'set "DIR=%~dp0"',
-        f'set "LIVE=%DIR%{exe_name}"',
+        f'set "LIVE=%DIR%{safe_exe}"',
         f'set "NEW=%DIR%{staging}"',
-        f'set "OLD=%DIR%{exe_name}.bak"',
+        f'set "OLD=%DIR%{safe_exe}.bak"',
         'if not exist "%NEW%" exit /b 1',
+        "set /a _n=0",
         ":wait",
-        f'tasklist /FI "IMAGENAME eq {exe_name}" 2>nul | find /I "{exe_name}" >nul',
-        "if %ERRORLEVEL%==0 (",
-        "  timeout /t 1 /nobreak >nul",
-        "  goto wait",
+        wait_filter,
+        "if errorlevel 1 goto swap",
+        "set /a _n+=1",
+        "if %_n% GEQ 180 exit /b 2",
+        # ping delay works without a console; timeout.exe often fails with CREATE_NO_WINDOW.
+        "ping -n 2 127.0.0.1 >nul",
+        "goto wait",
+        ":swap",
+        'if exist "%OLD%" del /f /q "%OLD%" >nul 2>&1',
+        'if exist "%LIVE%" (',
+        '  move /y "%LIVE%" "%OLD%" >nul',
+        "  if errorlevel 1 (",
+        "    ping -n 2 127.0.0.1 >nul",
+        '    move /y "%LIVE%" "%OLD%" >nul',
+        "    if errorlevel 1 exit /b 3",
+        "  )",
         ")",
-        'if exist "%OLD%" del /f /q "%OLD%"',
-        'if exist "%LIVE%" move /y "%LIVE%" "%OLD%"',
-        'move /y "%NEW%" "%LIVE%"',
+        'move /y "%NEW%" "%LIVE%" >nul',
+        "if errorlevel 1 (",
+        "  ping -n 2 127.0.0.1 >nul",
+        '  move /y "%NEW%" "%LIVE%" >nul',
+        "  if errorlevel 1 exit /b 4",
+        ")",
         'start "" "%LIVE%"',
-        'del /f /q "%~f0"',
+        'del /f /q "%~f0" >nul 2>&1',
         "endlocal",
     ]
     with open(script_path, "w", encoding="utf-8", newline="\r\n") as f:
@@ -452,19 +492,28 @@ def write_apply_script(app_dir: str, exe_name: str) -> str:
     return script_path
 
 
-def launch_apply_and_exit(app_dir: str, exe_name: str) -> None:
-    script = write_apply_script(app_dir, exe_name)
-    flags = 0
+def launch_apply_and_exit(
+    app_dir: str,
+    exe_name: str,
+    wait_pid: Optional[int] = None,
+) -> None:
+    """Spawn the apply script so it outlives this process, then the caller must exit."""
+    pid = wait_pid if wait_pid is not None else os.getpid()
+    script = write_apply_script(app_dir, exe_name, wait_pid=pid)
+    # Do not combine CREATE_NO_WINDOW with DETACHED_PROCESS: Windows may ignore
+    # or reject the pair, and timeout-based waiters then never run correctly.
+    popen_kwargs = {
+        "cwd": app_dir,
+        "close_fds": True,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
     if sys.platform == "win32":
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
-            subprocess, "DETACHED_PROCESS", 0
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
         )
-    subprocess.Popen(
-        ["cmd.exe", "/c", script],
-        cwd=app_dir,
-        creationflags=flags,
-        close_fds=True,
-    )
+    subprocess.Popen(["cmd.exe", "/c", script], **popen_kwargs)
 
 
 def cleanup_staging(app_dir: str, remove_partial_download: bool = False) -> None:
