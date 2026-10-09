@@ -32,7 +32,7 @@ from io import BytesIO
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 
-__version__ = "1.5.4"
+__version__ = "1.5.5"
 APP_MUTEX_NAME = "Global\\CyberScribeSingleInstance"
 ERROR_ALREADY_EXISTS = 183
 
@@ -681,6 +681,32 @@ class AudioRecorder:
 # WHISPER TRANSCRIBER
 # ==================================================================================
 
+def load_wav_mono_f32(path, expected_rate=16000):
+    """Load a PCM WAV as float32 mono for faster-whisper (avoids PyAV decode).
+
+    Our recorder always writes 16 kHz mono int16; this path bypasses
+    ``faster_whisper.audio.decode_audio`` / ``av.open(..., metadata_errors=...)``,
+    which breaks on PyAV 19 + faster-whisper 1.2.1.
+    """
+    import numpy as np
+
+    with wave.open(path, "rb") as wf:
+        channels = wf.getnchannels()
+        rate = wf.getframerate()
+        sampwidth = wf.getsampwidth()
+        frames = wf.readframes(wf.getnframes())
+
+    if sampwidth != 2:
+        raise ValueError(f"Unsupported sample width: {sampwidth} (need 16-bit PCM)")
+    if rate != expected_rate:
+        raise ValueError(f"Unexpected sample rate: {rate} (need {expected_rate})")
+
+    audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    if channels > 1:
+        audio = audio.reshape(-1, channels).mean(axis=1)
+    return audio
+
+
 class Transcriber:
     def __init__(self, config):
         self.config = config
@@ -760,8 +786,15 @@ class Transcriber:
                 profile = self.config.get("transcription_profile") or "fast"
                 preset = PROFILE_PRESETS.get(profile, PROFILE_PRESETS["fast"])
 
+                # Prefer numpy PCM input so we never hit the PyAV metadata_errors bug.
+                try:
+                    audio_input = load_wav_mono_f32(audio_path)
+                except Exception as e:
+                    log_error(f"WAV load failed, falling back to file path: {e}")
+                    audio_input = audio_path
+
                 segments, _info = self.model.transcribe(
-                    audio_path,
+                    audio_input,
                     beam_size=preset["beam_size"],
                     best_of=preset["best_of"],
                     language=lang,

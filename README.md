@@ -73,7 +73,7 @@ Transcription runs entirely on your machine. Application logs record events and 
 
 ## Project status
 
-Current release line: **v1.5.4** (fix recording hotkey after capture + reliable post-update relaunch). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). Copy `config.example.json` to `config.json` for a starting config.
+Current release line: **v1.5.5** (fix transcription broken by PyAV 19 / faster-whisper). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). Copy `config.example.json` to `config.json` for a starting config.
 
 ## Support
 
