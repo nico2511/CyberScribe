@@ -73,7 +73,7 @@ Transcription runs entirely on your machine. Application logs record events and 
 
 ## Project status
 
-Current release line: **v1.5.2** (live hotkey capture including mouse buttons; prior: update apply handoff + SHA256 UI). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). Copy `config.example.json` to `config.json` for a starting config.
+Current release line: **v1.5.3** (fix live hotkey capture UI thread; mouse side buttons + keyboard). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). Copy `config.example.json` to `config.json` for a starting config.
 
 ## Support
 
