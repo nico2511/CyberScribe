@@ -118,6 +118,7 @@ class HotkeyHelpersTest(unittest.TestCase):
 
         app = CyberScribe.CyberScribeApp.__new__(CyberScribe.CyberScribeApp)
         app.queue = queue.Queue()
+        app._orphan_listeners = []
         app._hotkey_capture = {
             "done": False,
             "armed": True,
@@ -131,6 +132,29 @@ class HotkeyHelpersTest(unittest.TestCase):
         self.assertEqual(msg, ("hotkey_capture_result", "F9"))
         self.assertTrue(app.queue.empty())
         self.assertIsNone(app._hotkey_capture)
+
+    def test_retire_listener_defers_join(self):
+        class FakeListener:
+            def __init__(self):
+                self.stopped = False
+                self.joined = False
+
+            def stop(self):
+                self.stopped = True
+
+            def join(self, timeout=None):
+                self.joined = True
+
+        app = CyberScribe.CyberScribeApp.__new__(CyberScribe.CyberScribeApp)
+        app._orphan_listeners = []
+        listener = FakeListener()
+        app._retire_listener(listener, join=False)
+        self.assertTrue(listener.stopped)
+        self.assertFalse(listener.joined)
+        self.assertEqual(app._orphan_listeners, [listener])
+        app._reap_orphan_listeners()
+        self.assertTrue(listener.joined)
+        self.assertEqual(app._orphan_listeners, [])
 
 
 if __name__ == "__main__":

@@ -429,6 +429,13 @@ def write_apply_script(app_dir: str, exe_name: str, wait_pid: Optional[int] = No
 
     Uses ``ping`` for delays (``timeout`` fails under CREATE_NO_WINDOW) and prefers waiting
     on the specific PID so a stuck or renamed process cannot leave the staging EXE behind.
+
+    After the swap, settle before the first launch: a one-file PyInstaller EXE unpacks to
+    ``%TEMP%\\_MEI*`` and the first start right after ``move`` can race Defender / file
+    release (``Failed to load Python DLL``). We verify the live file exists and meets
+    ``MIN_EXE_BYTES``, start with an explicit working directory, then optionally retry
+    once only if the image name is not still running — a failed bootloader MessageBox
+    keeps the process in tasklist until OK, so we must not spawn extra starts in that case.
     """
     script_path = os.path.join(app_dir, APPLY_SCRIPT_NAME)
     staging = UPDATE_STAGING_NAME
@@ -449,6 +456,11 @@ def write_apply_script(app_dir: str, exe_name: str, wait_pid: Optional[int] = No
         wait_filter = (
             f'tasklist /FI "IMAGENAME eq {safe_exe}" 2>nul | find /I "{safe_exe}" >nul'
         )
+
+    min_bytes = int(MIN_EXE_BYTES)
+    image_running = (
+        f'tasklist /FI "IMAGENAME eq {safe_exe}" 2>nul | find /I "{safe_exe}" >nul'
+    )
 
     lines = [
         "@echo off",
@@ -483,7 +495,22 @@ def write_apply_script(app_dir: str, exe_name: str, wait_pid: Optional[int] = No
         '  move /y "%NEW%" "%LIVE%" >nul',
         "  if errorlevel 1 exit /b 4",
         ")",
-        'start "" "%LIVE%"',
+        # ~3s settle so AV / file locks release before first PyInstaller unpack.
+        "ping -n 4 127.0.0.1 >nul",
+        'if not exist "%LIVE%" exit /b 5',
+        'for %%A in ("%LIVE%") do set "SIZE=%%~zA"',
+        f"if not defined SIZE exit /b 5",
+        f"if %SIZE% LSS {min_bytes} exit /b 5",
+        # Explicit /D so the restarted EXE does not inherit a wrong cwd.
+        'start "" /D "%DIR%" "%LIVE%"',
+        # Wait, then one delayed retry only if the image never stayed up (clean fail).
+        # Do not retry when a bootloader MessageBox process is still listed.
+        "ping -n 4 127.0.0.1 >nul",
+        image_running,
+        "if errorlevel 1 (",
+        "  ping -n 3 127.0.0.1 >nul",
+        '  if exist "%LIVE%" start "" /D "%DIR%" "%LIVE%"',
+        ")",
         'del /f /q "%~f0" >nul 2>&1',
         "endlocal",
     ]
