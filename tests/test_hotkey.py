@@ -106,6 +106,32 @@ class HotkeyHelpersTest(unittest.TestCase):
         cfg = CyberScribe.sanitize_config({"hotkey": "x2"})
         self.assertEqual(cfg["hotkey"], "mouse_x2")
 
+    def test_tk_keysym_token(self):
+        self.assertEqual(CyberScribe.CyberScribeApp._tk_keysym_token("F8"), "F8")
+        self.assertEqual(CyberScribe.CyberScribeApp._tk_keysym_token("Escape"), "escape")
+        self.assertIsNone(CyberScribe.CyberScribeApp._tk_keysym_token("Control_L"))
+        self.assertEqual(CyberScribe.CyberScribeApp._tk_keysym_token("a"), "a")
+
+    def test_capture_finish_posts_to_queue_once(self):
+        import queue
+        import threading
+
+        app = CyberScribe.CyberScribeApp.__new__(CyberScribe.CyberScribeApp)
+        app.queue = queue.Queue()
+        app._hotkey_capture = {
+            "done": False,
+            "armed": True,
+            "lock": threading.Lock(),
+            "keyboard": None,
+            "mouse": None,
+        }
+        app._capture_finish("F9")
+        app._capture_finish("F10")  # ignored — already done
+        msg = app.queue.get_nowait()
+        self.assertEqual(msg, ("hotkey_capture_result", "F9"))
+        self.assertTrue(app.queue.empty())
+        self.assertIsNone(app._hotkey_capture)
+
 
 if __name__ == "__main__":
     unittest.main()

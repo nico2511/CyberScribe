@@ -32,7 +32,7 @@ from io import BytesIO
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 
-__version__ = "1.5.2"
+__version__ = "1.5.3"
 APP_MUTEX_NAME = "Global\\CyberScribeSingleInstance"
 ERROR_ALREADY_EXISTS = 183
 
@@ -806,6 +806,7 @@ class CyberScribeApp:
         self.queue = queue.Queue()
         self.hotkey_listener = None
         self._hotkey_capture = None
+        self._hotkey_capture_ui = None
         self._last_hotkey_ts = 0.0
 
         self._update_checking = False
@@ -847,8 +848,21 @@ class CyberScribeApp:
         self._hotkey_capture = None
         if not capture:
             return
+        unbind = capture.get("unbind_tk")
+        if unbind:
+            try:
+                unbind()
+            except Exception:
+                pass
         for key in ("keyboard", "mouse"):
-            self._stop_listener(capture.get(key), timeout=0.5)
+            listener = capture.get(key)
+            if not listener:
+                continue
+            # Never join from a pynput callback; stop is enough here.
+            try:
+                listener.stop()
+            except Exception:
+                pass
 
     def setup_hotkey(self):
         self._stop_hotkey_listener()
@@ -977,47 +991,131 @@ class CyberScribeApp:
             return "cmd"
         return None
 
-    def start_hotkey_capture(self, on_result, on_status=None):
+    @staticmethod
+    def _tk_keysym_token(keysym):
+        """Map a Tk keysym to a hotkey token (or 'escape' / None for modifiers)."""
+        if not keysym:
+            return None
+        if keysym in (
+            "Control_L", "Control_R", "Alt_L", "Alt_R", "Shift_L", "Shift_R",
+            "Meta_L", "Meta_R", "Win_L", "Win_R", "Super_L", "Super_R",
+        ):
+            return None
+        if keysym == "Escape":
+            return "escape"
+        if keysym.startswith("F") and keysym[1:].isdigit():
+            return keysym
+        special = {
+            "space": "space",
+            "Tab": "tab",
+            "Return": "enter",
+            "KP_Enter": "enter",
+            "BackSpace": "backspace",
+            "Delete": "delete",
+            "Insert": "insert",
+            "Home": "home",
+            "End": "end",
+            "Prior": "page_up",
+            "Next": "page_down",
+            "Up": "up",
+            "Down": "down",
+            "Left": "left",
+            "Right": "right",
+            "Pause": "pause",
+            "Scroll_Lock": "scroll_lock",
+            "Print": "print_screen",
+        }
+        if keysym in special:
+            return special[keysym]
+        if len(keysym) == 1:
+            return keysym.lower()
+        if keysym.startswith("KP_") and len(keysym) == 4 and keysym[3].isdigit():
+            return keysym[3]
+        return keysym.lower()
+
+    @staticmethod
+    def _tk_event_modifiers(event):
+        """Read modifier keys from a Tk event.state bitmask."""
+        state = int(getattr(event, "state", 0) or 0)
+        mods = []
+        if state & 0x4:
+            mods.append("ctrl")
+        if state & 0x20000:  # Mod1 / Alt on Windows
+            mods.append("alt")
+        if state & 0x8:  # Alt/Mod1 fallback on some platforms
+            if "alt" not in mods:
+                mods.append("alt")
+        if state & 0x1:
+            mods.append("shift")
+        if state & 0x40000:  # Mod4 / Win
+            mods.append("cmd")
+        return mods
+
+    def _capture_post_status(self, msg):
+        self.queue.put(("hotkey_capture_status", msg))
+
+    def _capture_finish(self, value):
+        """Complete capture from any thread; UI updates go through the app queue."""
+        state = self._hotkey_capture
+        if not state:
+            return
+        lock = state.get("lock")
+        if lock:
+            with lock:
+                if state.get("done"):
+                    return
+                state["done"] = True
+        elif state.get("done"):
+            return
+        else:
+            state["done"] = True
+        self._hotkey_capture = None
+        unbind = state.get("unbind_tk")
+        if unbind:
+            try:
+                unbind()
+            except Exception:
+                pass
+        for key in ("keyboard", "mouse"):
+            listener = state.get(key)
+            if not listener:
+                continue
+            try:
+                listener.stop()
+            except Exception:
+                pass
+        self.queue.put(("hotkey_capture_result", value))
+
+    def cancel_hotkey_capture(self):
+        if not self._hotkey_capture:
+            return
+        self._capture_post_status("Capture annulée.")
+        self._capture_finish(None)
+
+    def start_hotkey_capture(self):
         """Listen once for a keyboard combo or mouse side/middle button.
 
-        on_result(hotkey_or_None) is called on the Tk main thread via queue when
-        possible; callers should pass a thread-safe callback (e.g. root.after).
+        Results are delivered on the Tk main loop via self.queue
+        (hotkey_capture_status / hotkey_capture_result). Never touch Tk
+        widgets from pynput threads.
         """
         self._stop_hotkey_capture()
-        self._stop_hotkey_listener()
+        # Stop without a long join on the UI thread (avoids a frozen Capturer click).
+        listener = self.hotkey_listener
+        self.hotkey_listener = None
+        if listener:
+            try:
+                listener.stop()
+            except Exception:
+                pass
 
         state = {
             "modifiers": set(),
             "done": False,
             "armed": False,
+            "lock": threading.Lock(),
         }
         self._hotkey_capture = state
-
-        def _finish(value):
-            if state.get("done"):
-                return
-            state["done"] = True
-            # Stop without join — we may be inside a pynput callback.
-            self._hotkey_capture = None
-            for key in ("keyboard", "mouse"):
-                listener = state.get(key)
-                if not listener:
-                    continue
-                try:
-                    listener.stop()
-                except Exception:
-                    pass
-            try:
-                on_result(value)
-            except Exception as e:
-                log_error(f"Hotkey capture callback failed: {e}")
-
-        def _status(msg):
-            if on_status:
-                try:
-                    on_status(msg)
-                except Exception:
-                    pass
 
         def on_press(key):
             if state["done"] or not state["armed"]:
@@ -1028,14 +1126,14 @@ class CyberScribeApp:
                 return
             token = self._key_to_hotkey_token(key)
             if token == "escape":
-                _status("Capture annulée.")
-                _finish(None)
+                self._capture_post_status("Capture annulée.")
+                self._capture_finish(None)
                 return
             if not token:
                 return
             order = [m for m in ("ctrl", "alt", "shift", "cmd") if m in state["modifiers"]]
             order.append(token)
-            _finish("+".join(order))
+            self._capture_finish("+".join(order))
 
         def on_release(key):
             mod = self._modifier_token(key)
@@ -1053,9 +1151,11 @@ class CyberScribeApp:
             value = mapping.get(button)
             if not value:
                 if button in (mouse.Button.left, mouse.Button.right):
-                    _status("Bouton gauche/droit ignoré — utilisez X1, X2 ou molette.")
+                    self._capture_post_status(
+                        "Clic gauche/droit ignoré — touche clavier, X1, X2 ou molette."
+                    )
                 return
-            _finish(value)
+            self._capture_finish(value)
 
         try:
             kb_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
@@ -1064,20 +1164,66 @@ class CyberScribeApp:
             state["mouse"] = ms_listener
             kb_listener.start()
             ms_listener.start()
-            # Arm after a short delay so the Capturer click is not recorded.
-            def _arm():
-                if not state["done"]:
-                    state["armed"] = True
-                    _status("En écoute… touche ou bouton souris (Échap pour annuler).")
 
-            threading.Timer(0.35, _arm).start()
+            def _arm():
+                if self._hotkey_capture is state and not state["done"]:
+                    state["armed"] = True
+                    self._capture_post_status(
+                        "En écoute… appuyez sur une touche ou un bouton souris (Échap / Capturer pour annuler)."
+                    )
+
+            # Arm after the Capturer click fully settles.
+            threading.Timer(0.4, _arm).start()
             return True
         except Exception as e:
             log_error(f"Hotkey capture failed: {e}")
             self._stop_hotkey_capture()
             self.setup_hotkey()
-            _finish(None)
+            self.queue.put(("hotkey_capture_result", None))
             return False
+
+    def handle_tk_capture_keypress(self, event):
+        """Tk fallback: capture keys while the settings window has focus."""
+        state = self._hotkey_capture
+        if not state or state.get("done") or not state.get("armed"):
+            return
+        keysym = getattr(event, "keysym", "") or ""
+        token = self._tk_keysym_token(keysym)
+        if token is None:
+            return "break"
+        if token == "escape":
+            self._capture_post_status("Capture annulée.")
+            self._capture_finish(None)
+            return "break"
+        mods = self._tk_event_modifiers(event)
+        # Drop shift for letter keys when it only uppercases the char.
+        order = [m for m in ("ctrl", "alt", "shift", "cmd") if m in mods]
+        order.append(token)
+        self._capture_finish("+".join(order))
+        return "break"
+
+    def _apply_hotkey_capture_status(self, msg):
+        ui = self._hotkey_capture_ui
+        if not ui:
+            return
+        try:
+            callback = ui.get("on_status")
+            if callback:
+                callback(msg)
+        except Exception as e:
+            log_error(f"Hotkey capture status UI failed: {e}")
+
+    def _apply_hotkey_capture_result(self, value):
+        ui = self._hotkey_capture_ui
+        try:
+            if ui and ui.get("on_result"):
+                ui["on_result"](value)
+        except Exception as e:
+            log_error(f"Hotkey capture result UI failed: {e}")
+        finally:
+            # Always restore the saved activation key until the user saves.
+            if not self._hotkey_capture:
+                self.setup_hotkey()
 
     def toggle_recording(self):
         if self.is_recording:
@@ -1859,8 +2005,8 @@ class CyberScribeApp:
 
             create_label(">> ACTIVATION KEY").pack(pady=(8, 2))
             create_help_text(
-                "Capture live : cliquez Capturer puis appuyez sur une touche "
-                "(ex. F8, Ctrl+Shift+F8) ou un bouton souris (X1 / X2 / molette)."
+                "Cliquez Capturer, puis appuyez sur une touche (F8, Ctrl+Shift+F8…) "
+                "ou un bouton souris (X1 / X2 / molette). Recliquez Capturer pour annuler."
             ).pack(pady=(0, 4))
             hk_var = tk.StringVar(root, value=normalize_hotkey(self.config.get("hotkey")))
             hk_display_var = tk.StringVar(root, value=display_hotkey(hk_var.get()))
@@ -1869,6 +2015,7 @@ class CyberScribeApp:
             hk_row = tk.Frame(main_frame, bg=C_BG)
             hk_row.pack(pady=0, fill="x", padx=20)
 
+            # Focus sink so Tk KeyPress events reach us during capture.
             hk_display = tk.Label(
                 hk_row,
                 textvariable=hk_display_var,
@@ -1879,6 +2026,10 @@ class CyberScribeApp:
                 anchor="w",
                 padx=10,
                 pady=6,
+                takefocus=1,
+                highlightthickness=1,
+                highlightbackground=C_INPUT_BG,
+                highlightcolor=C_ACCENT,
             )
             hk_display.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
@@ -1909,54 +2060,67 @@ class CyberScribeApp:
                 hk_var.set(canon)
                 hk_display_var.set(display_hotkey(canon))
 
-            def _capture_status(msg):
-                def _apply():
-                    try:
-                        if root.winfo_exists():
-                            hk_status_var.set(msg or "")
-                    except tk.TclError:
-                        pass
-
+            def _unbind_tk_capture():
                 try:
-                    root.after(0, _apply)
+                    root.unbind("<KeyPress>")
+                    hk_display.unbind("<KeyPress>")
                 except Exception:
                     pass
 
-            def _capture_done(value):
-                def _apply():
-                    try:
-                        if not root.winfo_exists():
-                            self.setup_hotkey()
-                            return
-                        capture_btn.config(state="normal", text="[ CAPTURER ]")
-                        if value:
-                            _set_hotkey_value(value)
-                            hk_status_var.set(f"Raccourci détecté : {display_hotkey(value)}")
-                        elif not hk_status_var.get():
-                            hk_status_var.set("Capture annulée.")
-                        # Restore the currently saved activation key until Save.
-                        self.setup_hotkey()
-                    except tk.TclError:
-                        self.setup_hotkey()
-
+            def _capture_status(msg):
                 try:
-                    root.after(0, _apply)
-                except Exception:
-                    self.setup_hotkey()
+                    if root.winfo_exists():
+                        hk_status_var.set(msg or "")
+                except tk.TclError:
+                    pass
+
+            def _capture_done(value):
+                try:
+                    if not root.winfo_exists():
+                        return
+                    _unbind_tk_capture()
+                    capture_btn.config(state="normal", text="[ CAPTURER ]", bg="#334155")
+                    hk_display.config(highlightbackground=C_INPUT_BG)
+                    if value:
+                        _set_hotkey_value(value)
+                        hk_status_var.set(f"Raccourci détecté : {display_hotkey(value)}")
+                    elif not hk_status_var.get() or "écoute" in (hk_status_var.get() or "").lower():
+                        hk_status_var.set("Capture annulée.")
+                except tk.TclError:
+                    pass
+
+            self._hotkey_capture_ui = {
+                "on_status": _capture_status,
+                "on_result": _capture_done,
+            }
 
             def _start_capture():
+                # Second click cancels an in-progress capture.
                 if self._hotkey_capture:
+                    self.cancel_hotkey_capture()
                     return
-                capture_btn.config(state="disabled", text="[ ÉCOUTE… ]")
+                capture_btn.config(text="[ ANNULER ]", bg=C_WARN)
                 hk_status_var.set("Préparation de la capture…")
-                ok = self.start_hotkey_capture(_capture_done, on_status=_capture_status)
+                hk_display.config(highlightbackground=C_ACCENT)
+                try:
+                    root.focus_force()
+                    hk_display.focus_set()
+                except Exception:
+                    pass
+                root.bind("<KeyPress>", self.handle_tk_capture_keypress)
+                hk_display.bind("<KeyPress>", self.handle_tk_capture_keypress)
+                ok = self.start_hotkey_capture()
+                if ok and self._hotkey_capture is not None:
+                    self._hotkey_capture["unbind_tk"] = _unbind_tk_capture
                 if not ok:
-                    capture_btn.config(state="normal", text="[ CAPTURER ]")
+                    _unbind_tk_capture()
+                    capture_btn.config(state="normal", text="[ CAPTURER ]", bg="#334155")
                     hk_status_var.set("Capture impossible (pynput).")
 
             capture_btn.config(command=_start_capture)
 
             def _on_settings_close():
+                self._hotkey_capture_ui = None
                 self._stop_hotkey_capture()
                 self.setup_hotkey()
                 try:
@@ -2233,6 +2397,7 @@ class CyberScribeApp:
                         return
 
                 self._stop_hotkey_capture()
+                self._hotkey_capture_ui = None
                 self.config.update({
                     "hotkey": normalize_hotkey(hk_var.get()),
                     "language": lang_var.get(),
@@ -2384,6 +2549,11 @@ class CyberScribeApp:
                         self._show_sha_mismatch(msg[1])
                     elif msg[0] == "local_exe_sha256" and len(msg) > 3:
                         self._apply_local_exe_sha256(msg[1], msg[2], msg[3])
+                    elif msg[0] == "hotkey_capture_status" and len(msg) > 1:
+                        self._apply_hotkey_capture_status(msg[1])
+                    elif msg[0] == "hotkey_capture_result":
+                        value = msg[1] if len(msg) > 1 else None
+                        self._apply_hotkey_capture_result(value)
                     elif msg[0] == "update_download_failed" and len(msg) > 1:
                         self.update_tray_icon(loading=False)
                         self._notify("CyberScribe", "Échec du téléchargement de la mise à jour.")
