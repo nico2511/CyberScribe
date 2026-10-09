@@ -32,7 +32,7 @@ from io import BytesIO
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 
-__version__ = "1.5.1"
+__version__ = "1.5.2"
 APP_MUTEX_NAME = "Global\\CyberScribeSingleInstance"
 ERROR_ALREADY_EXISTS = 183
 
@@ -137,7 +137,7 @@ try:
     import pystray
     import pyperclip
     import pyautogui
-    from pynput import keyboard
+    from pynput import keyboard, mouse
     from PIL import Image
     from faster_whisper import WhisperModel
 except ImportError as e:
@@ -355,11 +355,84 @@ HOTKEY_MODIFIERS = {
     "win": "<cmd>",
 }
 
+# Canonical stored values -> human label / pynput mouse.Button name
+MOUSE_HOTKEYS = {
+    "mouse_x1": "x1",
+    "mouse_x2": "x2",
+    "mouse_middle": "middle",
+}
+MOUSE_HOTKEY_ALIASES = {
+    "mouse_x1": "mouse_x1",
+    "mouse:x1": "mouse_x1",
+    "x1": "mouse_x1",
+    "button4": "mouse_x1",
+    "souris_x1": "mouse_x1",
+    "mouse_x2": "mouse_x2",
+    "mouse:x2": "mouse_x2",
+    "x2": "mouse_x2",
+    "button5": "mouse_x2",
+    "souris_x2": "mouse_x2",
+    "mouse_middle": "mouse_middle",
+    "mouse:middle": "mouse_middle",
+    "middle": "mouse_middle",
+    "souris_molette": "mouse_middle",
+    "mouse_mid": "mouse_middle",
+}
+MOUSE_HOTKEY_LABELS = {
+    "mouse_x1": "Souris X1 (latéral)",
+    "mouse_x2": "Souris X2 (latéral)",
+    "mouse_middle": "Souris molette (clic)",
+}
+
+
+def normalize_hotkey(raw):
+    """Return a canonical hotkey string (keyboard combo or mouse_*)."""
+    raw = str(raw or "").strip()
+    if not raw:
+        return DEFAULT_CONFIG["hotkey"]
+    alias = MOUSE_HOTKEY_ALIASES.get(raw.lower().replace(" ", ""))
+    if alias:
+        return alias
+    parts = [p.strip() for p in raw.replace(" ", "").split("+") if p.strip()]
+    if not parts:
+        return DEFAULT_CONFIG["hotkey"]
+    pretty = []
+    for part in parts:
+        low = part.strip("<>").lower()
+        if low in ("control", "ctrl"):
+            pretty.append("ctrl")
+        elif low in ("win", "cmd"):
+            pretty.append("cmd")
+        elif low in HOTKEY_MODIFIERS:
+            pretty.append(low)
+        elif low.startswith("f") and low[1:].isdigit():
+            pretty.append(low.upper())
+        else:
+            pretty.append(low)
+    return "+".join(pretty) if pretty else DEFAULT_CONFIG["hotkey"]
+
+
+def is_mouse_hotkey(raw):
+    return normalize_hotkey(raw) in MOUSE_HOTKEYS
+
+
+def display_hotkey(raw):
+    """Human-readable label for settings UI."""
+    canon = normalize_hotkey(raw)
+    if canon in MOUSE_HOTKEY_LABELS:
+        return MOUSE_HOTKEY_LABELS[canon]
+    return canon
+
 
 def format_hotkey(raw):
-    """Convert a user hotkey like 'F8' or 'ctrl+shift+f8' to pynput form."""
-    raw = (raw or "F8").strip()
-    parts = [p.strip().lower() for p in raw.replace(" ", "").split("+") if p.strip()]
+    """Convert a user hotkey like 'F8' or 'ctrl+shift+f8' to pynput form.
+
+    Mouse hotkeys are not converted here — use is_mouse_hotkey() / MOUSE_HOTKEYS.
+    """
+    canon = normalize_hotkey(raw)
+    if canon in MOUSE_HOTKEYS:
+        return canon
+    parts = [p.strip().lower() for p in canon.replace(" ", "").split("+") if p.strip()]
     if not parts:
         parts = ["f8"]
     formatted = []
@@ -385,7 +458,7 @@ def sanitize_config(data):
             continue
         cfg[key] = data[key]
 
-    hotkey = str(cfg.get("hotkey") or "").strip()
+    hotkey = normalize_hotkey(cfg.get("hotkey"))
     cfg["hotkey"] = hotkey[:32] if hotkey else DEFAULT_CONFIG["hotkey"]
 
     language = str(cfg.get("language") or "fr").lower()
@@ -732,6 +805,7 @@ class CyberScribeApp:
         self.tray_icon = None
         self.queue = queue.Queue()
         self.hotkey_listener = None
+        self._hotkey_capture = None
         self._last_hotkey_ts = 0.0
 
         self._update_checking = False
@@ -749,9 +823,7 @@ class CyberScribeApp:
         if check_for_update and self.config.get("check_updates"):
             threading.Thread(target=self._background_update_check, daemon=True).start()
 
-    def _stop_hotkey_listener(self):
-        listener = self.hotkey_listener
-        self.hotkey_listener = None
+    def _stop_listener(self, listener, timeout=1.0):
         if not listener:
             return
         try:
@@ -761,33 +833,62 @@ class CyberScribeApp:
         # Join so Windows hooks are fully released before a new listener starts
         # (otherwise F8 can fire twice → double beep).
         try:
-            listener.join(timeout=1.0)
+            listener.join(timeout=timeout)
         except Exception:
             pass
+
+    def _stop_hotkey_listener(self):
+        listener = self.hotkey_listener
+        self.hotkey_listener = None
+        self._stop_listener(listener)
+
+    def _stop_hotkey_capture(self):
+        capture = self._hotkey_capture
+        self._hotkey_capture = None
+        if not capture:
+            return
+        for key in ("keyboard", "mouse"):
+            self._stop_listener(capture.get(key), timeout=0.5)
 
     def setup_hotkey(self):
         self._stop_hotkey_listener()
 
-        raw_hotkey = self.config.get("hotkey")
-        formatted_hotkey = format_hotkey(raw_hotkey)
-        log(f"Setting up hotkey: {raw_hotkey} -> {formatted_hotkey}")
+        raw_hotkey = normalize_hotkey(self.config.get("hotkey"))
+        log(f"Setting up hotkey: {raw_hotkey}")
 
         try:
+            if raw_hotkey in MOUSE_HOTKEYS:
+                button_name = MOUSE_HOTKEYS[raw_hotkey]
+                target = getattr(mouse.Button, button_name)
+
+                def _on_click(x, y, button, pressed):
+                    if pressed and button == target:
+                        self.on_hotkey_press()
+
+                self.hotkey_listener = mouse.Listener(on_click=_on_click)
+                self.hotkey_listener.start()
+                log(f"Mouse hotkey listener started ({raw_hotkey}).")
+                return True
+
+            formatted_hotkey = format_hotkey(raw_hotkey)
             self.hotkey_listener = keyboard.GlobalHotKeys({
                 formatted_hotkey: self.on_hotkey_press
             })
             self.hotkey_listener.start()
-            log("Hotkey listener started.")
+            log(f"Keyboard hotkey listener started ({formatted_hotkey}).")
             return True
         except Exception as e:
             log_error(f"Error setting hotkey with pynput: {e}")
-            if formatted_hotkey != "<f8>":
+            if raw_hotkey != "F8":
                 log("Falling back to F8.")
                 self.config.set("hotkey", "F8")
                 return self.setup_hotkey()
             return False
 
     def on_hotkey_press(self):
+        # Ignore activation while the settings capture dialog is listening.
+        if self._hotkey_capture:
+            return
         # pynput can deliver the same hotkey twice on some Windows setups.
         now = time.monotonic()
         last = getattr(self, "_last_hotkey_ts", 0.0)
@@ -796,6 +897,187 @@ class CyberScribeApp:
         self._last_hotkey_ts = now
         log("Hotkey detected!")
         self.queue.put("toggle_recording")
+
+    @staticmethod
+    def _key_to_hotkey_token(key):
+        """Map a pynput key to a config token, or None if it is a modifier/escape."""
+        try:
+            from pynput.keyboard import Key
+        except Exception:
+            return None
+
+        modifiers = {
+            Key.ctrl, Key.ctrl_l, Key.ctrl_r,
+            Key.alt, Key.alt_l, Key.alt_r,
+            Key.shift, Key.shift_l, Key.shift_r,
+            Key.cmd, Key.cmd_l, Key.cmd_r,
+        }
+        if key in modifiers:
+            return None
+        if key == Key.esc:
+            return "escape"
+
+        special = {
+            Key.f1: "F1", Key.f2: "F2", Key.f3: "F3", Key.f4: "F4",
+            Key.f5: "F5", Key.f6: "F6", Key.f7: "F7", Key.f8: "F8",
+            Key.f9: "F9", Key.f10: "F10", Key.f11: "F11", Key.f12: "F12",
+            Key.space: "space", Key.tab: "tab", Key.enter: "enter",
+            Key.backspace: "backspace", Key.delete: "delete",
+            Key.insert: "insert", Key.home: "home", Key.end: "end",
+            Key.page_up: "page_up", Key.page_down: "page_down",
+            Key.up: "up", Key.down: "down", Key.left: "left", Key.right: "right",
+            Key.pause: "pause", Key.scroll_lock: "scroll_lock",
+            Key.print_screen: "print_screen",
+        }
+        if key in special:
+            return special[key]
+
+        if hasattr(key, "char") and key.char:
+            ch = key.char
+            if ch.isprintable() and not ch.isspace():
+                return ch.lower()
+            # Ctrl+letter often yields a control char; recover via virtual-key.
+            vk = getattr(key, "vk", None)
+            if vk is not None and 65 <= vk <= 90:
+                return chr(vk).lower()
+            if vk is not None and 48 <= vk <= 57:
+                return chr(vk)
+            return None
+
+        vk = getattr(key, "vk", None)
+        if vk is not None:
+            if 65 <= vk <= 90:
+                return chr(vk).lower()
+            if 48 <= vk <= 57:
+                return chr(vk)
+            # Windows VK_F1..F12 = 0x70..0x7B
+            if 0x70 <= vk <= 0x7B:
+                return f"F{vk - 0x6F}"
+
+        name = str(key)
+        if name.startswith("Key."):
+            name = name[4:]
+        if name.startswith("f") and name[1:].isdigit():
+            return name.upper()
+        return name.lower() if name else None
+
+    @staticmethod
+    def _modifier_token(key):
+        try:
+            from pynput.keyboard import Key
+        except Exception:
+            return None
+        if key in (Key.ctrl, Key.ctrl_l, Key.ctrl_r):
+            return "ctrl"
+        if key in (Key.alt, Key.alt_l, Key.alt_r):
+            return "alt"
+        if key in (Key.shift, Key.shift_l, Key.shift_r):
+            return "shift"
+        if key in (Key.cmd, Key.cmd_l, Key.cmd_r):
+            return "cmd"
+        return None
+
+    def start_hotkey_capture(self, on_result, on_status=None):
+        """Listen once for a keyboard combo or mouse side/middle button.
+
+        on_result(hotkey_or_None) is called on the Tk main thread via queue when
+        possible; callers should pass a thread-safe callback (e.g. root.after).
+        """
+        self._stop_hotkey_capture()
+        self._stop_hotkey_listener()
+
+        state = {
+            "modifiers": set(),
+            "done": False,
+            "armed": False,
+        }
+        self._hotkey_capture = state
+
+        def _finish(value):
+            if state.get("done"):
+                return
+            state["done"] = True
+            # Stop without join — we may be inside a pynput callback.
+            self._hotkey_capture = None
+            for key in ("keyboard", "mouse"):
+                listener = state.get(key)
+                if not listener:
+                    continue
+                try:
+                    listener.stop()
+                except Exception:
+                    pass
+            try:
+                on_result(value)
+            except Exception as e:
+                log_error(f"Hotkey capture callback failed: {e}")
+
+        def _status(msg):
+            if on_status:
+                try:
+                    on_status(msg)
+                except Exception:
+                    pass
+
+        def on_press(key):
+            if state["done"] or not state["armed"]:
+                return
+            mod = self._modifier_token(key)
+            if mod:
+                state["modifiers"].add(mod)
+                return
+            token = self._key_to_hotkey_token(key)
+            if token == "escape":
+                _status("Capture annulée.")
+                _finish(None)
+                return
+            if not token:
+                return
+            order = [m for m in ("ctrl", "alt", "shift", "cmd") if m in state["modifiers"]]
+            order.append(token)
+            _finish("+".join(order))
+
+        def on_release(key):
+            mod = self._modifier_token(key)
+            if mod:
+                state["modifiers"].discard(mod)
+
+        def on_click(x, y, button, pressed):
+            if not pressed or state["done"] or not state["armed"]:
+                return
+            mapping = {
+                mouse.Button.x1: "mouse_x1",
+                mouse.Button.x2: "mouse_x2",
+                mouse.Button.middle: "mouse_middle",
+            }
+            value = mapping.get(button)
+            if not value:
+                if button in (mouse.Button.left, mouse.Button.right):
+                    _status("Bouton gauche/droit ignoré — utilisez X1, X2 ou molette.")
+                return
+            _finish(value)
+
+        try:
+            kb_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+            ms_listener = mouse.Listener(on_click=on_click)
+            state["keyboard"] = kb_listener
+            state["mouse"] = ms_listener
+            kb_listener.start()
+            ms_listener.start()
+            # Arm after a short delay so the Capturer click is not recorded.
+            def _arm():
+                if not state["done"]:
+                    state["armed"] = True
+                    _status("En écoute… touche ou bouton souris (Échap pour annuler).")
+
+            threading.Timer(0.35, _arm).start()
+            return True
+        except Exception as e:
+            log_error(f"Hotkey capture failed: {e}")
+            self._stop_hotkey_capture()
+            self.setup_hotkey()
+            _finish(None)
+            return False
 
     def toggle_recording(self):
         if self.is_recording:
@@ -1517,7 +1799,6 @@ class CyberScribeApp:
                     _bind_wheel(child)
 
             canvas.bind("<MouseWheel>", _on_mousewheel)
-            root.protocol("WM_DELETE_WINDOW", root.destroy)
 
             canvas.pack(side="left", fill="both", expand=True)
             scrollbar.pack(side="right", fill="y")
@@ -1577,9 +1858,113 @@ class CyberScribeApp:
             tk.Frame(main_frame, bg=C_ACCENT, height=2).pack(fill="x", padx=20, pady=(8, 12))
 
             create_label(">> ACTIVATION KEY").pack(pady=(8, 2))
-            create_help_text("Key binding for recording (e.g. F8 or ctrl+shift+f8)").pack(pady=(0, 4))
-            hk_var = tk.StringVar(root, value=self.config.get("hotkey"))
-            create_entry(hk_var).pack(pady=0, ipadx=5, ipady=3)
+            create_help_text(
+                "Capture live : cliquez Capturer puis appuyez sur une touche "
+                "(ex. F8, Ctrl+Shift+F8) ou un bouton souris (X1 / X2 / molette)."
+            ).pack(pady=(0, 4))
+            hk_var = tk.StringVar(root, value=normalize_hotkey(self.config.get("hotkey")))
+            hk_display_var = tk.StringVar(root, value=display_hotkey(hk_var.get()))
+            hk_status_var = tk.StringVar(root, value="")
+
+            hk_row = tk.Frame(main_frame, bg=C_BG)
+            hk_row.pack(pady=0, fill="x", padx=20)
+
+            hk_display = tk.Label(
+                hk_row,
+                textvariable=hk_display_var,
+                bg=C_INPUT_BG,
+                fg=C_INPUT_FG,
+                font=("Consolas", 11),
+                relief="flat",
+                anchor="w",
+                padx=10,
+                pady=6,
+            )
+            hk_display.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+            capture_btn = tk.Button(
+                hk_row,
+                text="[ CAPTURER ]",
+                bg="#334155",
+                fg="white",
+                font=("Consolas", 9, "bold"),
+                relief="flat",
+                padx=10,
+                pady=4,
+            )
+            capture_btn.pack(side="right")
+
+            tk.Label(
+                main_frame,
+                textvariable=hk_status_var,
+                bg=C_BG,
+                fg="#94a3b8",
+                font=("Consolas", 8),
+                wraplength=400,
+                justify="left",
+            ).pack(pady=(4, 0), padx=20, anchor="w")
+
+            def _set_hotkey_value(value):
+                canon = normalize_hotkey(value)
+                hk_var.set(canon)
+                hk_display_var.set(display_hotkey(canon))
+
+            def _capture_status(msg):
+                def _apply():
+                    try:
+                        if root.winfo_exists():
+                            hk_status_var.set(msg or "")
+                    except tk.TclError:
+                        pass
+
+                try:
+                    root.after(0, _apply)
+                except Exception:
+                    pass
+
+            def _capture_done(value):
+                def _apply():
+                    try:
+                        if not root.winfo_exists():
+                            self.setup_hotkey()
+                            return
+                        capture_btn.config(state="normal", text="[ CAPTURER ]")
+                        if value:
+                            _set_hotkey_value(value)
+                            hk_status_var.set(f"Raccourci détecté : {display_hotkey(value)}")
+                        elif not hk_status_var.get():
+                            hk_status_var.set("Capture annulée.")
+                        # Restore the currently saved activation key until Save.
+                        self.setup_hotkey()
+                    except tk.TclError:
+                        self.setup_hotkey()
+
+                try:
+                    root.after(0, _apply)
+                except Exception:
+                    self.setup_hotkey()
+
+            def _start_capture():
+                if self._hotkey_capture:
+                    return
+                capture_btn.config(state="disabled", text="[ ÉCOUTE… ]")
+                hk_status_var.set("Préparation de la capture…")
+                ok = self.start_hotkey_capture(_capture_done, on_status=_capture_status)
+                if not ok:
+                    capture_btn.config(state="normal", text="[ CAPTURER ]")
+                    hk_status_var.set("Capture impossible (pynput).")
+
+            capture_btn.config(command=_start_capture)
+
+            def _on_settings_close():
+                self._stop_hotkey_capture()
+                self.setup_hotkey()
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
+
+            root.protocol("WM_DELETE_WINDOW", _on_settings_close)
 
             create_label(">> LANGUAGE MODULE").pack(pady=(12, 2))
             create_help_text("Target language for vocal processing.").pack(pady=(0, 4))
@@ -1847,8 +2232,9 @@ class CyberScribeApp:
                         )
                         return
 
+                self._stop_hotkey_capture()
                 self.config.update({
-                    "hotkey": hk_var.get(),
+                    "hotkey": normalize_hotkey(hk_var.get()),
                     "language": lang_var.get(),
                     "model_size": model_var.get(),
                     "device": device_var.get(),
@@ -1863,6 +2249,7 @@ class CyberScribeApp:
                         "Raccourci invalide. Retour à F8.",
                         parent=root,
                     )
+                    _set_hotkey_value("F8")
 
                 models_changed = (
                     os.path.normcase(self.config.get_models_dir())
@@ -2031,6 +2418,10 @@ class CyberScribeApp:
             pass
         try:
             self.recorder.terminate()
+        except Exception:
+            pass
+        try:
+            self._stop_hotkey_capture()
         except Exception:
             pass
         try:
