@@ -7,7 +7,7 @@
 ## Features
 
 - **Offline transcription**: Faster-Whisper, models stored next to the app. No cloud.
-- **Global hotkey**: Toggle recording from anywhere (default `F8`). Combinations like `ctrl+shift+f8` are supported.
+- **Global hotkey**: Toggle recording from anywhere (default `F8`). Combinations like `ctrl+shift+f8` are supported, and mouse side buttons (`X1` / `X2`) or middle-click can be bound via live capture in Configuration.
 - **Recording overlay**: A compact always-on-top indicator while you speak.
 - **Audio feedback**: Beeps on start and stop.
 - **Auto-paste**: Copies the transcript and sends Ctrl+V to the focused window.
@@ -65,7 +65,7 @@ Removing the warning for everyone requires a **code-signing certificate** on the
 2. Wait until the tray tooltip says **Prêt** — the Whisper model may still be loading on first launch.
 3. Press **F8** (or your configured hotkey) to start recording. You will hear a high beep and see the overlay.
 4. Press the hotkey again to stop. The transcribed text is pasted into the active window.
-5. Open **Configuration** from the tray icon to change hotkey, language, model, device, compute type, profile, and max duration. Changing the model or device reloads Whisper in the background.
+5. Open **Configuration** from the tray icon to change hotkey, language, model, device, compute type, profile, and max duration. For the activation key, click **Capturer** then press a key combo or a mouse button (side `X1`/`X2` or middle) — no need to type the binding. Changing the model or device reloads Whisper in the background.
 
 ## Privacy
 
@@ -73,7 +73,7 @@ Transcription runs entirely on your machine. Application logs record events and 
 
 ## Project status
 
-Current release line: **v1.5.1** (fix: update apply handoff + single hotkey beep; SHA256 checksums in update prompts and Configuration). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). Copy `config.example.json` to `config.json` for a starting config.
+Current release line: **v1.5.2** (live hotkey capture including mouse buttons; prior: update apply handoff + SHA256 UI). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). Copy `config.example.json` to `config.json` for a starting config.
 
 ## Support
 

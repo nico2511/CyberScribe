@@ -26,7 +26,71 @@ def _install_import_stubs():
     ensure("pyautogui")
     pynput = ensure("pynput")
     keyboard = ensure("pynput.keyboard")
+    mouse = ensure("pynput.mouse")
     pynput.keyboard = keyboard
+    pynput.mouse = mouse
+
+    class _Button:
+        left = "left"
+        right = "right"
+        middle = "middle"
+        x1 = "x1"
+        x2 = "x2"
+
+    mouse.Button = _Button
+    mouse.Listener = lambda *a, **k: types.SimpleNamespace(
+        start=lambda: None, stop=lambda: None, join=lambda *a, **k: None
+    )
+    keyboard.GlobalHotKeys = lambda *a, **k: types.SimpleNamespace(
+        start=lambda: None, stop=lambda: None, join=lambda *a, **k: None
+    )
+    keyboard.Listener = lambda *a, **k: types.SimpleNamespace(
+        start=lambda: None, stop=lambda: None, join=lambda *a, **k: None
+    )
+    keyboard.Key = types.SimpleNamespace(
+        ctrl="ctrl",
+        ctrl_l="ctrl_l",
+        ctrl_r="ctrl_r",
+        alt="alt",
+        alt_l="alt_l",
+        alt_r="alt_r",
+        shift="shift",
+        shift_l="shift_l",
+        shift_r="shift_r",
+        cmd="cmd",
+        cmd_l="cmd_l",
+        cmd_r="cmd_r",
+        esc="esc",
+        f1="f1",
+        f2="f2",
+        f3="f3",
+        f4="f4",
+        f5="f5",
+        f6="f6",
+        f7="f7",
+        f8="f8",
+        f9="f9",
+        f10="f10",
+        f11="f11",
+        f12="f12",
+        space="space",
+        tab="tab",
+        enter="enter",
+        backspace="backspace",
+        delete="delete",
+        insert="insert",
+        home="home",
+        end="end",
+        page_up="page_up",
+        page_down="page_down",
+        up="up",
+        down="down",
+        left="left",
+        right="right",
+        pause="pause",
+        scroll_lock="scroll_lock",
+        print_screen="print_screen",
+    )
     pil = ensure("PIL")
     image = ensure("PIL.Image")
     pil.Image = image
@@ -119,6 +183,7 @@ class UpdateUiSmokeTest(unittest.TestCase):
         self.app.queue = queue.Queue()
         self.app.tray_icon = None
         self.app.hotkey_listener = None
+        self.app._hotkey_capture = None
         self.app.config = CyberScribe.ConfigManager()
 
     def tearDown(self):
