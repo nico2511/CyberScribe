@@ -185,6 +185,7 @@ class UpdateUiSmokeTest(unittest.TestCase):
         self.app.hotkey_listener = None
         self.app._hotkey_capture = None
         self.app._hotkey_capture_ui = None
+        self.app._orphan_listeners = []
         self.app.config = CyberScribe.ConfigManager()
 
     def tearDown(self):

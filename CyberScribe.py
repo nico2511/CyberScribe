@@ -32,7 +32,7 @@ from io import BytesIO
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 
-__version__ = "1.5.3"
+__version__ = "1.5.4"
 APP_MUTEX_NAME = "Global\\CyberScribeSingleInstance"
 ERROR_ALREADY_EXISTS = 183
 
@@ -807,6 +807,7 @@ class CyberScribeApp:
         self.hotkey_listener = None
         self._hotkey_capture = None
         self._hotkey_capture_ui = None
+        self._orphan_listeners = []
         self._last_hotkey_ts = 0.0
 
         self._update_checking = False
@@ -832,18 +833,49 @@ class CyberScribeApp:
         except Exception:
             pass
         # Join so Windows hooks are fully released before a new listener starts
-        # (otherwise F8 can fire twice → double beep).
+        # (otherwise F8 can fire twice → double beep / hooks stop working).
         try:
             listener.join(timeout=timeout)
         except Exception:
             pass
+
+    def _retire_listener(self, listener, *, join=True, timeout=1.0):
+        """Stop a pynput listener; join now (UI thread) or defer join to orphans."""
+        if not listener:
+            return
+        try:
+            listener.stop()
+        except Exception:
+            pass
+        if join:
+            try:
+                listener.join(timeout=timeout)
+            except Exception:
+                pass
+            return
+        # Must not join from inside a pynput callback (deadlock risk).
+        orphans = getattr(self, "_orphan_listeners", None)
+        if orphans is None:
+            self._orphan_listeners = []
+            orphans = self._orphan_listeners
+        orphans.append(listener)
+
+    def _reap_orphan_listeners(self, timeout=1.0):
+        """Join listeners previously stopped from a pynput callback."""
+        orphans = getattr(self, "_orphan_listeners", None) or []
+        self._orphan_listeners = []
+        for listener in orphans:
+            try:
+                listener.join(timeout=timeout)
+            except Exception:
+                pass
 
     def _stop_hotkey_listener(self):
         listener = self.hotkey_listener
         self.hotkey_listener = None
         self._stop_listener(listener)
 
-    def _stop_hotkey_capture(self):
+    def _stop_hotkey_capture(self, *, join=True):
         capture = self._hotkey_capture
         self._hotkey_capture = None
         if not capture:
@@ -855,17 +887,16 @@ class CyberScribeApp:
             except Exception:
                 pass
         for key in ("keyboard", "mouse"):
-            listener = capture.get(key)
-            if not listener:
-                continue
-            # Never join from a pynput callback; stop is enough here.
-            try:
-                listener.stop()
-            except Exception:
-                pass
+            self._retire_listener(capture.get(key), join=join, timeout=0.5)
+        if join:
+            self._reap_orphan_listeners(timeout=0.5)
 
     def setup_hotkey(self):
+        # Never leave a capture session blocking activation.
+        if self._hotkey_capture and self._hotkey_capture.get("done"):
+            self._hotkey_capture = None
         self._stop_hotkey_listener()
+        self._reap_orphan_listeners()
 
         raw_hotkey = normalize_hotkey(self.config.get("hotkey"))
         log(f"Setting up hotkey: {raw_hotkey}")
@@ -900,8 +931,9 @@ class CyberScribeApp:
             return False
 
     def on_hotkey_press(self):
-        # Ignore activation while the settings capture dialog is listening.
-        if self._hotkey_capture:
+        # Ignore activation only while an armed capture session is listening.
+        capture = self._hotkey_capture
+        if capture and not capture.get("done"):
             return
         # pynput can deliver the same hotkey twice on some Windows setups.
         now = time.monotonic()
@@ -1076,14 +1108,9 @@ class CyberScribeApp:
                 unbind()
             except Exception:
                 pass
+        # Stop without join — may run inside a pynput callback.
         for key in ("keyboard", "mouse"):
-            listener = state.get(key)
-            if not listener:
-                continue
-            try:
-                listener.stop()
-            except Exception:
-                pass
+            self._retire_listener(state.get(key), join=False)
         self.queue.put(("hotkey_capture_result", value))
 
     def cancel_hotkey_capture(self):
@@ -1099,15 +1126,12 @@ class CyberScribeApp:
         (hotkey_capture_status / hotkey_capture_result). Never touch Tk
         widgets from pynput threads.
         """
-        self._stop_hotkey_capture()
-        # Stop without a long join on the UI thread (avoids a frozen Capturer click).
+        self._stop_hotkey_capture(join=True)
+        # Release the global activation hook before installing capture listeners.
         listener = self.hotkey_listener
         self.hotkey_listener = None
-        if listener:
-            try:
-                listener.stop()
-            except Exception:
-                pass
+        self._retire_listener(listener, join=True, timeout=0.6)
+        self._reap_orphan_listeners(timeout=0.3)
 
         state = {
             "modifiers": set(),
@@ -1221,7 +1245,8 @@ class CyberScribeApp:
         except Exception as e:
             log_error(f"Hotkey capture result UI failed: {e}")
         finally:
-            # Always restore the saved activation key until the user saves.
+            # Join capture hooks on the UI thread, then restore activation.
+            self._reap_orphan_listeners()
             if not self._hotkey_capture:
                 self.setup_hotkey()
 
@@ -2006,7 +2031,8 @@ class CyberScribeApp:
             create_label(">> ACTIVATION KEY").pack(pady=(8, 2))
             create_help_text(
                 "Cliquez Capturer, puis appuyez sur une touche (F8, Ctrl+Shift+F8…) "
-                "ou un bouton souris (X1 / X2 / molette). Recliquez Capturer pour annuler."
+                "ou un bouton souris (X1 / X2 / molette). Recliquez Capturer pour annuler. "
+                "Le raccourci affiché est celui qui lance l'enregistrement (pensez à Enregistrer)."
             ).pack(pady=(0, 4))
             hk_var = tk.StringVar(root, value=normalize_hotkey(self.config.get("hotkey")))
             hk_display_var = tk.StringVar(root, value=display_hotkey(hk_var.get()))
@@ -2121,7 +2147,7 @@ class CyberScribeApp:
 
             def _on_settings_close():
                 self._hotkey_capture_ui = None
-                self._stop_hotkey_capture()
+                self._stop_hotkey_capture(join=True)
                 self.setup_hotkey()
                 try:
                     root.destroy()
@@ -2396,7 +2422,7 @@ class CyberScribeApp:
                         )
                         return
 
-                self._stop_hotkey_capture()
+                self._stop_hotkey_capture(join=True)
                 self._hotkey_capture_ui = None
                 self.config.update({
                     "hotkey": normalize_hotkey(hk_var.get()),

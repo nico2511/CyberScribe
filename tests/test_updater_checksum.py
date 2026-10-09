@@ -286,11 +286,12 @@ class DownloadVerificationTest(unittest.TestCase):
 
 
 class ProductPinTest(unittest.TestCase):
-    def test_version_is_1_5_1_and_ui_mentions_checksum(self):
+    def test_version_is_1_5_4_and_ui_mentions_checksum(self):
         app = os.path.join(ROOT, "CyberScribe.py")
         with open(app, encoding="utf-8") as handle:
             source = handle.read()
-        self.assertIn('__version__ = "1.5.1"', source)
+        self.assertIn('__version__ = "1.5.4"', source)
+        self.assertNotIn('__version__ = "1.5.3"', source)
         self.assertNotIn('__version__ = "1.5.0"', source)
         self.assertNotIn('__version__ = "1.4.0"', source)
         self.assertIn("Somme SHA256 vérifiée", source)
@@ -321,6 +322,19 @@ class ApplyScriptTest(unittest.TestCase):
         self.assertIn("CyberScribe.update.exe", body)
         self.assertIn('move /y "%NEW%" "%LIVE%"', body)
         self.assertIn(":swap", body)
+        # Post-swap settle + cwd-aware start (avoids first-launch Python DLL miss).
+        self.assertIn("ping -n 4 127.0.0.1", body)
+        self.assertIn('start "" /D "%DIR%" "%LIVE%"', body)
+        self.assertIn("LSS", body)
+        self.assertIn('IMAGENAME eq CyberScribe.exe', body)
+        # Post-swap settle + launch hardening (PyInstaller one-file / Defender race).
+        self.assertIn("ping -n 4 127.0.0.1", body)
+        self.assertIn('if not exist "%LIVE%" exit /b 5', body)
+        self.assertIn(f"if %SIZE% LSS {updater.MIN_EXE_BYTES}", body)
+        self.assertIn('start "" /D "%DIR%" "%LIVE%"', body)
+        self.assertNotIn('start "" "%LIVE%"', body)
+        self.assertIn('IMAGENAME eq CyberScribe.exe', body)
+        self.assertIn("if errorlevel 1 (", body)
 
     def test_write_apply_script_falls_back_to_image_name(self):
         path = updater.write_apply_script(self.app_dir, "CyberScribe.exe", wait_pid=None)
@@ -328,6 +342,8 @@ class ApplyScriptTest(unittest.TestCase):
             body = handle.read()
         self.assertIn('IMAGENAME eq CyberScribe.exe', body)
         self.assertNotIn("timeout /t", body)
+        self.assertIn('start "" /D "%DIR%" "%LIVE%"', body)
+        self.assertIn("ping -n 4 127.0.0.1", body)
 
     def test_launch_apply_uses_new_process_group_not_detached(self):
         calls = []
