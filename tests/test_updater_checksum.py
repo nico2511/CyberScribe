@@ -286,11 +286,12 @@ class DownloadVerificationTest(unittest.TestCase):
 
 
 class ProductPinTest(unittest.TestCase):
-    def test_version_is_1_5_4_and_ui_mentions_checksum(self):
+    def test_version_is_1_5_5_and_ui_mentions_checksum(self):
         app = os.path.join(ROOT, "CyberScribe.py")
         with open(app, encoding="utf-8") as handle:
             source = handle.read()
-        self.assertIn('__version__ = "1.5.4"', source)
+        self.assertIn('__version__ = "1.5.5"', source)
+        self.assertNotIn('__version__ = "1.5.4"', source)
         self.assertNotIn('__version__ = "1.5.3"', source)
         self.assertNotIn('__version__ = "1.5.0"', source)
         self.assertNotIn('__version__ = "1.4.0"', source)
