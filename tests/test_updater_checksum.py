@@ -286,13 +286,13 @@ class DownloadVerificationTest(unittest.TestCase):
 
 
 class ProductPinTest(unittest.TestCase):
-    def test_version_is_1_5_5_and_ui_mentions_checksum(self):
+    def test_version_is_1_5_6_and_ui_mentions_checksum(self):
         app = os.path.join(ROOT, "CyberScribe.py")
         with open(app, encoding="utf-8") as handle:
             source = handle.read()
-        self.assertIn('__version__ = "1.5.5"', source)
+        self.assertIn('__version__ = "1.5.6"', source)
+        self.assertNotIn('__version__ = "1.5.5"', source)
         self.assertNotIn('__version__ = "1.5.4"', source)
-        self.assertNotIn('__version__ = "1.5.3"', source)
         self.assertNotIn('__version__ = "1.5.0"', source)
         self.assertNotIn('__version__ = "1.4.0"', source)
         self.assertIn("Somme SHA256 vérifiée", source)
@@ -321,21 +321,20 @@ class ApplyScriptTest(unittest.TestCase):
         self.assertIn('ping -n 2 127.0.0.1', body)
         self.assertNotIn("timeout /t", body)
         self.assertIn("CyberScribe.update.exe", body)
-        self.assertIn('move /y "%NEW%" "%LIVE%"', body)
         self.assertIn(":swap", body)
-        # Post-swap settle + cwd-aware start (avoids first-launch Python DLL miss).
-        self.assertIn("ping -n 4 127.0.0.1", body)
-        self.assertIn('start "" /D "%DIR%" "%LIVE%"', body)
-        self.assertIn("LSS", body)
-        self.assertIn('IMAGENAME eq CyberScribe.exe', body)
-        # Post-swap settle + launch hardening (PyInstaller one-file / Defender race).
-        self.assertIn("ping -n 4 127.0.0.1", body)
-        self.assertIn('if not exist "%LIVE%" exit /b 5', body)
+        self.assertIn('copy /y "%NEW%" "%LIVE%"', body)
         self.assertIn(f"if %SIZE% LSS {updater.MIN_EXE_BYTES}", body)
-        self.assertIn('start "" /D "%DIR%" "%LIVE%"', body)
-        self.assertNotIn('start "" "%LIVE%"', body)
-        self.assertIn('IMAGENAME eq CyberScribe.exe', body)
-        self.assertIn("if errorlevel 1 (", body)
+        self.assertIn(updater.RELAUNCH_SCRIPT_NAME, body)
+        self.assertIn('start "" /MIN cmd /c "%RELAUNCH%"', body)
+        relaunch = os.path.join(self.app_dir, updater.RELAUNCH_SCRIPT_NAME)
+        self.assertTrue(os.path.isfile(relaunch))
+        with open(relaunch, encoding="utf-8") as handle:
+            relaunch_body = handle.read()
+        self.assertIn(updater.RUNTIME_TMP_NAME, relaunch_body)
+        self.assertIn('set "TEMP=%DIR%', relaunch_body)
+        self.assertIn("certutil -hashfile", relaunch_body)
+        self.assertIn('start "" /D "%DIR%" "%LIVE%"', relaunch_body)
+        self.assertIn("ping -n 6 127.0.0.1", relaunch_body)
 
     def test_write_apply_script_falls_back_to_image_name(self):
         path = updater.write_apply_script(self.app_dir, "CyberScribe.exe", wait_pid=None)
@@ -343,8 +342,17 @@ class ApplyScriptTest(unittest.TestCase):
             body = handle.read()
         self.assertIn('IMAGENAME eq CyberScribe.exe', body)
         self.assertNotIn("timeout /t", body)
-        self.assertIn('start "" /D "%DIR%" "%LIVE%"', body)
-        self.assertIn("ping -n 4 127.0.0.1", body)
+        self.assertIn(updater.RELAUNCH_SCRIPT_NAME, body)
+
+    def test_cleanup_staging_removes_relaunch_script(self):
+        apply_path = os.path.join(self.app_dir, updater.APPLY_SCRIPT_NAME)
+        relaunch_path = os.path.join(self.app_dir, updater.RELAUNCH_SCRIPT_NAME)
+        for path in (apply_path, relaunch_path):
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("@echo off\n")
+        updater.cleanup_staging(self.app_dir)
+        self.assertFalse(os.path.exists(apply_path))
+        self.assertFalse(os.path.exists(relaunch_path))
 
     def test_launch_apply_uses_new_process_group_not_detached(self):
         calls = []

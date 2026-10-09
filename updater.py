@@ -31,6 +31,8 @@ EXE_ASSET_NAME = "CyberScribe.exe"
 SHA256_ASSET_SUFFIX = ".sha256"
 UPDATE_STAGING_NAME = "CyberScribe.update.exe"
 APPLY_SCRIPT_NAME = "_cyberscribe_apply_update.cmd"
+RELAUNCH_SCRIPT_NAME = "_cyberscribe_relaunch.cmd"
+RUNTIME_TMP_NAME = "_cyberscribe_tmp"
 MIN_EXE_BYTES = 5 * 1024 * 1024  # sanity floor (~5 MB); real binary is much larger
 
 _VERSION_RE = re.compile(r"^v?(?P<parts>\d+(?:\.\d+)*)", re.IGNORECASE)
@@ -430,12 +432,11 @@ def write_apply_script(app_dir: str, exe_name: str, wait_pid: Optional[int] = No
     Uses ``ping`` for delays (``timeout`` fails under CREATE_NO_WINDOW) and prefers waiting
     on the specific PID so a stuck or renamed process cannot leave the staging EXE behind.
 
-    After the swap, settle before the first launch: a one-file PyInstaller EXE unpacks to
-    ``%TEMP%\\_MEI*`` and the first start right after ``move`` can race Defender / file
-    release (``Failed to load Python DLL``). We verify the live file exists and meets
-    ``MIN_EXE_BYTES``, start with an explicit working directory, then optionally retry
-    once only if the image name is not still running — a failed bootloader MessageBox
-    keeps the process in tasklist until OK, so we must not spawn extra starts in that case.
+    First start of a one-file PyInstaller EXE right after replace often races Windows
+    Defender and ``%TEMP%\\_MEI*`` unpack (``Failed to load Python DLL``). We therefore:
+    settle after the old PID exits, copy (not only move) the new binary, force a full
+    file read via ``certutil``, then hand off to a short relaunch script that sets a
+    private ``TEMP``/``TMP`` under the install dir before ``start``.
     """
     script_path = os.path.join(app_dir, APPLY_SCRIPT_NAME)
     staging = UPDATE_STAGING_NAME
@@ -458,9 +459,30 @@ def write_apply_script(app_dir: str, exe_name: str, wait_pid: Optional[int] = No
         )
 
     min_bytes = int(MIN_EXE_BYTES)
-    image_running = (
-        f'tasklist /FI "IMAGENAME eq {safe_exe}" 2>nul | find /I "{safe_exe}" >nul'
-    )
+    relaunch_name = RELAUNCH_SCRIPT_NAME
+    runtime_tmp = RUNTIME_TMP_NAME
+
+    # Secondary launcher: private TEMP avoids colliding with a dying _MEI unpack,
+    # long settle + certutil force Defender to finish before the bootloader runs.
+    relaunch_lines = [
+        "@echo off",
+        "setlocal EnableExtensions",
+        f'set "DIR=%~dp0"',
+        f'set "LIVE=%DIR%{safe_exe}"',
+        f'set "TEMP=%DIR%{runtime_tmp}"',
+        'set "TMP=%TEMP%"',
+        'if not exist "%TEMP%" mkdir "%TEMP%" >nul 2>&1',
+        "ping -n 6 127.0.0.1 >nul",
+        'if not exist "%LIVE%" exit /b 1',
+        'certutil -hashfile "%LIVE%" SHA256 >nul 2>&1',
+        "ping -n 3 127.0.0.1 >nul",
+        'start "" /D "%DIR%" "%LIVE%"',
+        'del /f /q "%~f0" >nul 2>&1',
+        "endlocal",
+    ]
+    relaunch_path = os.path.join(app_dir, relaunch_name)
+    with open(relaunch_path, "w", encoding="utf-8", newline="\r\n") as f:
+        f.write("\r\n".join(relaunch_lines) + "\r\n")
 
     lines = [
         "@echo off",
@@ -469,6 +491,7 @@ def write_apply_script(app_dir: str, exe_name: str, wait_pid: Optional[int] = No
         f'set "LIVE=%DIR%{safe_exe}"',
         f'set "NEW=%DIR%{staging}"',
         f'set "OLD=%DIR%{safe_exe}.bak"',
+        f'set "RELAUNCH=%DIR%{relaunch_name}"',
         'if not exist "%NEW%" exit /b 1',
         "set /a _n=0",
         ":wait",
@@ -480,6 +503,8 @@ def write_apply_script(app_dir: str, exe_name: str, wait_pid: Optional[int] = No
         "ping -n 2 127.0.0.1 >nul",
         "goto wait",
         ":swap",
+        # Extra settle after the old process exits so hooks / _MEI cleanup finish.
+        "ping -n 4 127.0.0.1 >nul",
         'if exist "%OLD%" del /f /q "%OLD%" >nul 2>&1',
         'if exist "%LIVE%" (',
         '  move /y "%LIVE%" "%OLD%" >nul',
@@ -489,28 +514,25 @@ def write_apply_script(app_dir: str, exe_name: str, wait_pid: Optional[int] = No
         "    if errorlevel 1 exit /b 3",
         "  )",
         ")",
-        'move /y "%NEW%" "%LIVE%" >nul',
+        # copy+del is friendlier to AV locks than move for the incoming binary.
+        'copy /y "%NEW%" "%LIVE%" >nul',
         "if errorlevel 1 (",
-        "  ping -n 2 127.0.0.1 >nul",
-        '  move /y "%NEW%" "%LIVE%" >nul',
-        "  if errorlevel 1 exit /b 4",
+        "  ping -n 3 127.0.0.1 >nul",
+        '  copy /y "%NEW%" "%LIVE%" >nul',
+        "  if errorlevel 1 (",
+        '    move /y "%NEW%" "%LIVE%" >nul',
+        "    if errorlevel 1 exit /b 4",
+        "  )",
         ")",
-        # ~3s settle so AV / file locks release before first PyInstaller unpack.
-        "ping -n 4 127.0.0.1 >nul",
+        'del /f /q "%NEW%" >nul 2>&1',
+        "ping -n 3 127.0.0.1 >nul",
         'if not exist "%LIVE%" exit /b 5',
         'for %%A in ("%LIVE%") do set "SIZE=%%~zA"',
         f"if not defined SIZE exit /b 5",
         f"if %SIZE% LSS {min_bytes} exit /b 5",
-        # Explicit /D so the restarted EXE does not inherit a wrong cwd.
-        'start "" /D "%DIR%" "%LIVE%"',
-        # Wait, then one delayed retry only if the image never stayed up (clean fail).
-        # Do not retry when a bootloader MessageBox process is still listed.
-        "ping -n 4 127.0.0.1 >nul",
-        image_running,
-        "if errorlevel 1 (",
-        "  ping -n 3 127.0.0.1 >nul",
-        '  if exist "%LIVE%" start "" /D "%DIR%" "%LIVE%"',
-        ")",
+        'if not exist "%RELAUNCH%" exit /b 6',
+        # Detached relaunch with private TEMP (see RELAUNCH_SCRIPT_NAME).
+        'start "" /MIN cmd /c "%RELAUNCH%"',
         'del /f /q "%~f0" >nul 2>&1',
         "endlocal",
     ]
@@ -544,8 +566,8 @@ def launch_apply_and_exit(
 
 
 def cleanup_staging(app_dir: str, remove_partial_download: bool = False) -> None:
-    """Remove leftover apply script; optionally drop an unfinished staging EXE."""
-    names = [APPLY_SCRIPT_NAME]
+    """Remove leftover apply/relaunch scripts; optionally drop an unfinished staging EXE."""
+    names = [APPLY_SCRIPT_NAME, RELAUNCH_SCRIPT_NAME]
     if remove_partial_download:
         names.insert(0, UPDATE_STAGING_NAME)
     for name in names:

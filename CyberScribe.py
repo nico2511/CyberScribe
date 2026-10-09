@@ -32,7 +32,7 @@ from io import BytesIO
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 
-__version__ = "1.5.5"
+__version__ = "1.5.6"
 APP_MUTEX_NAME = "Global\\CyberScribeSingleInstance"
 ERROR_ALREADY_EXISTS = 183
 
@@ -1712,10 +1712,16 @@ class CyberScribeApp:
     def _after_download_copy(self, new_version, verification):
         mode = update_prompt_mode(verification.status) if update_prompt_mode else "warn"
         intro = f"Téléchargement terminé (v{new_version}).\n\n"
+        restart_note = (
+            "Le redémarrage peut prendre quelques secondes. "
+            "Si Windows affiche une erreur « Python DLL », cliquez OK puis relancez CyberScribe "
+            "(la mise à jour est déjà installée).\n\n"
+        )
         if verification.status == "verified":
             body = (
                 intro
                 + "Somme SHA256 vérifiée : le fichier correspond à CyberScribe.exe.sha256 publié avec la release.\n\n"
+                + restart_note
                 + "Installer maintenant et redémarrer CyberScribe ?"
             )
             digest = verification.expected or verification.actual
@@ -1725,6 +1731,7 @@ class CyberScribeApp:
                 intro
                 + "Attention : cette release n'a pas de fichier CyberScribe.exe.sha256. "
                 + "Le téléchargement n'a pas été vérifié. Vous pouvez tout de même installer.\n\n"
+                + restart_note
                 + "Installer quand même et redémarrer ?"
             )
             return body, [("SHA256 du fichier téléchargé", verification.actual)], mode, "Installer quand même"
@@ -1732,6 +1739,7 @@ class CyberScribeApp:
             intro
             + "Attention : le sidecar CyberScribe.exe.sha256 n'a pas pu être lu. "
             + "Le téléchargement n'a pas été vérifié. Vous pouvez tout de même installer.\n\n"
+            + restart_note
             + "Installer quand même et redémarrer ?"
         )
         return body, [("SHA256 du fichier téléchargé", verification.actual)], mode, "Installer quand même"
