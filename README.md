@@ -71,6 +71,12 @@ Removing the warning for everyone requires a **code-signing certificate** on the
 
 Transcription runs entirely on your machine. Application logs record events and error messages, never the dictated text.
 
+## Tests and latency bench
+
+See [`docs/TESTING.md`](docs/TESTING.md) for running unit tests (model-free tests always run; Whisper fixture tests skip when no local `tiny` cache) and `bench_dictation_latency.py` for min/median/max latency per profile.
+
+Optional pipeline timing in `config.json`: `"log_pipeline_timings": true` logs only durations and metadata after each dictation.
+
 ## Project status
 
 Current release line: **v1.5.6** (harder post-update relaunch; prior: transcription PyAV fix). Product audit: [`docs/AUDIT_PRODUIT.md`](docs/AUDIT_PRODUIT.md). Copy `config.example.json` to `config.json` for a starting config.

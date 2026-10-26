@@ -7,5 +7,6 @@
     "transcription_profile": "fast",
     "max_record_seconds": 25,
     "check_updates": true,
-    "models_dir": "%LOCALAPPDATA%\\CyberScribe\\models"
+    "models_dir": "%LOCALAPPDATA%\\CyberScribe\\models",
+    "log_pipeline_timings": false
 }
