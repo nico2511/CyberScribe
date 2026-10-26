@@ -20,6 +20,8 @@ config.json
 config.json.tmp
 models/
 *.wav
+!tests/fixtures/reference/*.wav
+tests/.models_cache/
 
 # In-app updater (local install folder)
 CyberScribe.update.exe

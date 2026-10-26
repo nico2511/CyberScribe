@@ -313,6 +313,7 @@ DEFAULT_CONFIG = {
     "max_record_seconds": 25,
     "check_updates": True,
     "models_dir": "",
+    "log_pipeline_timings": False,
 }
 ALLOWED_KEYS = set(DEFAULT_CONFIG.keys())
 
@@ -489,6 +490,19 @@ def sanitize_config(data):
         cfg["check_updates"] = check_updates.strip().lower() in ("1", "true", "yes", "on")
     else:
         cfg["check_updates"] = bool(DEFAULT_CONFIG["check_updates"])
+
+    log_timings = cfg.get("log_pipeline_timings")
+    if isinstance(log_timings, bool):
+        cfg["log_pipeline_timings"] = log_timings
+    elif isinstance(log_timings, str):
+        cfg["log_pipeline_timings"] = log_timings.strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+    else:
+        cfg["log_pipeline_timings"] = bool(DEFAULT_CONFIG["log_pipeline_timings"])
 
     models_dir = cfg.get("models_dir")
     if models_dir is None:
@@ -1354,10 +1368,16 @@ class CyberScribeApp:
         self.overlay.hide()
         self._beep(400, 200)
 
+        t_finalize = time.perf_counter()
         audio_path = self.recorder.stop()
+        audio_finalize_s = time.perf_counter() - t_finalize
         if audio_path:
             log("Audio captured.")
-            threading.Thread(target=self.process_audio, args=(audio_path,), daemon=True).start()
+            threading.Thread(
+                target=self.process_audio,
+                args=(audio_path, audio_finalize_s),
+                daemon=True,
+            ).start()
 
     def update_tray_icon(self, recording=False, loading=False):
         if not self.tray_icon:
@@ -1375,21 +1395,66 @@ class CyberScribeApp:
         except Exception as e:
             log_error(f"Error updating tray: {e}")
 
-    def process_audio(self, audio_path):
+    def process_audio(self, audio_path, audio_finalize_s=0.0):
         log("Transcribing...")
+        text = None
+        transcribe_s = 0.0
+        audio_duration_s = 0.0
+        profile = self.config.get("transcription_profile") or "fast"
         try:
-            text = self.transcriber.transcribe(audio_path)
+            from dictation_pipeline import format_timing_log, transcribe_with_model, wav_duration_seconds
+
+            if self.transcriber.model:
+                language = self.config.get("language") or "fr"
+                with self.transcriber._transcribe_lock:
+                    t0 = time.perf_counter()
+                    result = transcribe_with_model(
+                        self.transcriber.model,
+                        audio_path,
+                        profile=profile,
+                        language=language,
+                    )
+                    transcribe_s = time.perf_counter() - t0
+                    text = result.text
+                    audio_duration_s = result.audio_duration_s
+            else:
+                t0 = time.perf_counter()
+                text = self.transcriber.transcribe(audio_path)
+                transcribe_s = time.perf_counter() - t0
+                try:
+                    audio_duration_s = wav_duration_seconds(audio_path)
+                except Exception:
+                    audio_duration_s = 0.0
         finally:
             self.recorder._safe_remove(audio_path)
 
         if text:
-            log(f"Transcription result: [Redacted for security] ({len(text)} chars)")
-            self.paste_text(text)
+            log(f"Transcription finished ({len(text)} chars)")
+            paste_s = self.paste_text(text)
+            if self.config.get("log_pipeline_timings"):
+                from dictation_pipeline import PipelineTimings, format_timing_log
+
+                timings = PipelineTimings(
+                    audio_finalize_s=audio_finalize_s,
+                    transcribe_s=transcribe_s,
+                    paste_s=paste_s,
+                )
+                log(
+                    format_timing_log(
+                        profile,
+                        str(self.config.get("device") or "auto"),
+                        str(self.config.get("model_size") or "base"),
+                        audio_duration_s,
+                        timings,
+                        text_len=len(text),
+                    )
+                )
         else:
             log("No transcription result.")
             self._notify("CyberScribe", "Aucune transcription. Vérifiez le micro ou les logs.")
 
     def paste_text(self, text):
+        t0 = time.perf_counter()
         try:
             log("Attempting to paste text...")
             pyperclip.copy(text)
@@ -1410,6 +1475,7 @@ class CyberScribeApp:
                 pyautogui.hotkey("ctrl", "v")
             except Exception as e2:
                 log_error(f"Fallback paste failed: {e2}")
+        return time.perf_counter() - t0
 
     def request_settings(self, icon, item):
         self.queue.put("settings")
