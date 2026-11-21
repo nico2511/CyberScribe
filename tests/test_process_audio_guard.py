@@ -12,6 +12,7 @@ import wave
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from tests.whisper_test_support import install_cyberscribe_import_stubs  # noqa: E402
+import dictation_pipeline  # noqa: E402
 
 
 def _minimal_wav(path: str, *, frames: int = 8000) -> None:
@@ -39,14 +40,19 @@ class ProcessAudioGuardTest(unittest.TestCase):
             get=lambda k, default=None: default if k != "transcription_profile" else "fast"
         )
         self.app.queue = types.SimpleNamespace(put=lambda *a, **k: None)
-        self.app.transcriber = types.SimpleNamespace(model=None, loading=False)
+        self.app.transcriber = types.SimpleNamespace(
+            model=object(),
+            loading=False,
+            _transcribe_lock=threading.Lock(),
+        )
         calls = {"n": 0}
 
-        def _transcribe(_path):
+        def _transcribe_with_model(*args, **kwargs):
             calls["n"] += 1
-            return "ok"
+            return types.SimpleNamespace(text="ok", audio_duration_s=1.0)
 
-        self.app.transcriber.transcribe = _transcribe
+        self._orig_transcribe = dictation_pipeline.transcribe_with_model
+        dictation_pipeline.transcribe_with_model = _transcribe_with_model
         self.calls = calls
         self.app.paste_text = lambda _t: 0.0
         self.app._cyber = self._cyber
@@ -56,6 +62,10 @@ class ProcessAudioGuardTest(unittest.TestCase):
         _minimal_wav(self.wav_path)
 
     def tearDown(self):
+        try:
+            dictation_pipeline.transcribe_with_model = self._orig_transcribe
+        except AttributeError:
+            pass
         try:
             os.remove(self.wav_path)
         except OSError:

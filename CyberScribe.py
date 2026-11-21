@@ -719,11 +719,21 @@ class AudioRecorder:
         os.close(fd)
         self._temp_files.append(path)
         try:
+            pcm = normalize_pcm16_mono_bytes(b"".join(frames))
+            if not pcm:
+                self._safe_remove(path)
+                return None
             with wave.open(path, "wb") as wf:
                 wf.setnchannels(self.channels)
                 wf.setsampwidth(self.audio.get_sample_size(self.format))
                 wf.setframerate(self.rate)
-                wf.writeframes(b"".join(frames))
+                wf.writeframes(pcm)
+            try:
+                with open(path, "rb") as handle:
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except Exception as e:
+                log_error(f"WAV fsync failed ({type(e).__name__}): {e}")
             return path
         except Exception as e:
             log_error(f"Error saving wav: {e}")
@@ -777,6 +787,15 @@ class AudioRecorder:
 # WHISPER TRANSCRIBER
 # ==================================================================================
 
+def normalize_pcm16_mono_bytes(raw: bytes) -> bytes:
+    """Drop a trailing byte so PCM16 mono frame data is an even length."""
+    if not raw:
+        return b""
+    if len(raw) % 2:
+        return raw[:-1]
+    return raw
+
+
 def load_wav_mono_f32(path, expected_rate=16000):
     """Load a PCM WAV as float32 mono for faster-whisper (avoids PyAV decode).
 
@@ -790,7 +809,7 @@ def load_wav_mono_f32(path, expected_rate=16000):
         channels = wf.getnchannels()
         rate = wf.getframerate()
         sampwidth = wf.getsampwidth()
-        frames = wf.readframes(wf.getnframes())
+        frames = normalize_pcm16_mono_bytes(wf.readframes(wf.getnframes()))
 
     if sampwidth != 2:
         raise ValueError(f"Unsupported sample width: {sampwidth} (need 16-bit PCM)")
@@ -883,11 +902,7 @@ class Transcriber:
                 preset = PROFILE_PRESETS.get(profile, PROFILE_PRESETS["fast"])
 
                 # Prefer numpy PCM input so we never hit the PyAV metadata_errors bug.
-                try:
-                    audio_input = load_wav_mono_f32(audio_path)
-                except Exception as e:
-                    log_error(f"WAV load failed, falling back to file path: {e}")
-                    audio_input = audio_path
+                audio_input = load_wav_mono_f32(audio_path)
 
                 segments, _info = self.model.transcribe(
                     audio_input,
@@ -1568,6 +1583,16 @@ class CyberScribeApp:
 
         if audio_path:
             log("Audio captured.")
+            try:
+                with wave.open(audio_path, "rb") as wf:
+                    if wf.getnframes() <= 0:
+                        raise ValueError("empty capture")
+            except Exception as e:
+                log_error(f"Capture WAV not readable ({type(e).__name__}): {e}")
+                self.recorder._safe_remove(audio_path)
+                self.queue.put(("overlay_error", "✕ Erreur", "Réessaie avec F8"))
+                self.update_tray_icon(state="ready")
+                return
             threading.Thread(
                 target=self.process_audio,
                 args=(audio_path, audio_finalize_s, session_profile, dictation_duration),
@@ -1805,7 +1830,8 @@ class CyberScribeApp:
                 except Exception:
                     audio_duration_s = 0.0
         except Exception as e:
-            log_error(f"process_audio failed: {e}")
+            log_error(f"process_audio failed ({type(e).__name__}): {e}")
+            log_error(__import__("traceback").format_exc())
             self.queue.put(
                 (
                     "overlay_error",

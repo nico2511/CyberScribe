@@ -5,6 +5,7 @@ Privacy: never log or persist transcribed text from here — only durations and 
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -15,6 +16,15 @@ import wave
 # Lazy import of CyberScribe pieces avoids circular imports at module load.
 _PROFILE_PRESETS = None
 _load_wav_mono_f32 = None
+
+
+def _log_wav_load_failure(exc: BaseException) -> None:
+    try:
+        import CyberScribe as cs
+
+        cs.log_error(f"load_wav_mono_f32 failed ({type(exc).__name__}): {exc}")
+    except Exception:
+        logging.error(f"load_wav_mono_f32 failed ({type(exc).__name__}): {exc}")
 
 
 def _cyber():
@@ -88,8 +98,9 @@ def transcribe_with_model(
     t0 = time.perf_counter()
     try:
         audio_input = load_wav(audio_path)
-    except Exception:
-        audio_input = audio_path
+    except Exception as e:
+        _log_wav_load_failure(e)
+        raise
     timings.audio_finalize_s = time.perf_counter() - t0
 
     kwargs = transcribe_kwargs_for_profile(profile, language)
