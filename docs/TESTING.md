@@ -15,7 +15,7 @@ On a fresh clone, dictation reference tests **skip** instead of downloading weig
 | Always runs | Needs local `tiny` cache |
 |-------------|---------------------------|
 | `test_updater_checksum.py`, `test_hotkey.py`, `test_wav_load.py` | `test_dictation_reference.py` |
-| `test_audio_pipeline.py`, `test_dictation_pipeline_unit.py` | `bench_dictation_latency.py` |
+| `test_audio_pipeline.py`, `test_dictation_pipeline_unit.py`, `test_pre_buffer.py` | `bench_dictation_latency.py` |
 
 Whisper tests use the **`tiny`** model on **CPU** only. They look under `tests/.models_cache` or `CYBERSCRIBE_TEST_MODELS_DIR` and set `HF_HUB_OFFLINE=1` so missing files never trigger a HugHub download in CI.
 

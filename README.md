@@ -14,6 +14,7 @@
 - **Anti-latency profiles**: Fast, Balanced, Accurate.
 - **Smart device detection**: Automatic CUDA (NVIDIA GPU) or CPU.
 - **Auto-stop safety**: Configurable maximum recording duration.
+- **Pre-buffer (anti clip)**: Optional rolling microphone buffer so speech at the first instant after F8 is not cut off (see `pre_buffer_ms` in config).
 - **Single instance**: A second launch is refused so hotkeys do not collide.
 - **In-app updates** (Windows EXE): Optional check against GitHub Releases; downloads and swaps `CyberScribe.exe` in place while keeping `config.json` and your models folder. Install prompts show the release SHA256 (verified when `CyberScribe.exe.sha256` is published; a missing sidecar warns but does not block). Configuration shows this executable's SHA256.
 - **Configurable model storage**: Choose where Whisper weights live; moving the folder can migrate existing downloads (move or copy).
@@ -38,7 +39,7 @@ python CyberScribe.py
 
 ```bash
 pip install -r requirements.txt pyinstaller
-pyinstaller --noconsole --onefile --noconfirm --hidden-import=updater --hidden-import=models_storage --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "venv\Lib\site-packages\faster_whisper\assets\silero_vad_v6.onnx;faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
+pyinstaller --noconsole --onefile --noconfirm --hidden-import=updater --hidden-import=models_storage --hidden-import=dictation_pipeline --hidden-import=audio_pre_buffer --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "venv\Lib\site-packages\faster_whisper\assets\silero_vad_v6.onnx;faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
 ```
 
 *(Adjust the path to `silero_vad_v6.onnx` according to your Python environment.)*
@@ -66,6 +67,22 @@ Removing the warning for everyone requires a **code-signing certificate** on the
 3. Press **F8** (or your configured hotkey) to start recording. You will hear a high beep and see the overlay.
 4. Press the hotkey again to stop. The transcribed text is pasted into the active window.
 5. Open **Configuration** from the tray icon to change hotkey, language, model, device, compute type, profile, and max duration. For the activation key, click **Capturer** then press a key combo or a mouse button (side `X1`/`X2` or middle) — no need to type the binding. Changing the model or device reloads Whisper in the background.
+
+### `pre_buffer_ms` (speech at F8)
+
+By default the app keeps about **1 second** of microphone audio in memory (never written to disk except as part of a normal recording WAV, and never logged). When you press F8, that pre-roll is prepended to the capture so the first syllable is less likely to be clipped.
+
+In `config.json`:
+
+| Value | Behavior |
+|-------|----------|
+| `1000` (default) | ~1 s pre-roll at 16 kHz mono |
+| `0` | Disabled — recording starts only on F8 press (previous behavior) |
+| `1`–`3000` | Custom pre-roll length in milliseconds |
+
+**`max_record_seconds`**: The auto-stop timer still counts **only live capture** from the moment you press F8. The final WAV length is up to `pre_buffer_ms` + `max_record_seconds` of audio. Set `pre_buffer_ms` to `0` if you want the WAV capped strictly at `max_record_seconds`.
+
+If the microphone cannot stay open in the background (or pre-buffer is `0`), CyberScribe falls back to on-demand capture without error.
 
 ## Privacy
 

@@ -30,6 +30,12 @@ import glob
 import ctypes
 from io import BytesIO
 import tkinter as tk
+
+from audio_pre_buffer import (
+    CircularByteBuffer,
+    clamp_pre_buffer_ms,
+    pre_buffer_capacity_bytes,
+)
 from tkinter import filedialog, ttk, messagebox
 
 __version__ = "1.5.6"
@@ -311,6 +317,7 @@ DEFAULT_CONFIG = {
     "compute_type": "int8",
     "transcription_profile": "fast",
     "max_record_seconds": 25,
+    "pre_buffer_ms": 1000,
     "check_updates": True,
     "models_dir": "",
     "log_pipeline_timings": False,
@@ -483,6 +490,8 @@ def sanitize_config(data):
         max_seconds = DEFAULT_CONFIG["max_record_seconds"]
     cfg["max_record_seconds"] = max(0, min(max_seconds, MAX_RECORD_SECONDS_CAP))
 
+    cfg["pre_buffer_ms"] = clamp_pre_buffer_ms(cfg.get("pre_buffer_ms"))
+
     check_updates = cfg.get("check_updates")
     if isinstance(check_updates, bool):
         cfg["check_updates"] = check_updates
@@ -595,13 +604,51 @@ class AudioRecorder:
         self.chunk = 1024
         self._lock = threading.Lock()
         self._temp_files = []
+        self._pre_buffer_ms = 0
+        self._ring = CircularByteBuffer(0)
+        self._monitor_running = False
+        self._monitor_thread = None
+        self._legacy_capture = True
 
-    def start(self):
-        if self.is_recording:
+    def set_pre_buffer_ms(self, pre_buffer_ms):
+        """Configure pre-roll duration; call before ``start_background_capture``."""
+        self._pre_buffer_ms = clamp_pre_buffer_ms(pre_buffer_ms)
+        cap = pre_buffer_capacity_bytes(self._pre_buffer_ms, self.rate)
+        self._ring = CircularByteBuffer(cap)
+        self._legacy_capture = self._pre_buffer_ms <= 0
+
+    def pre_buffer_enabled(self):
+        return (
+            self._pre_buffer_ms > 0
+            and not self._legacy_capture
+            and self._monitor_running
+        )
+
+    def start_background_capture(self):
+        """Keep the mic open and fill the ring buffer when pre-buffer is enabled."""
+        if self._pre_buffer_ms <= 0:
+            self._legacy_capture = True
+            return
+        if self._monitor_running:
+            return
+        self._legacy_capture = False
+        try:
+            if not self._open_input_stream():
+                raise RuntimeError("microphone unavailable")
+            self._monitor_running = True
+            self._monitor_thread = threading.Thread(
+                target=self._monitor_loop, daemon=True, name="CyberScribeMicMonitor"
+            )
+            self._monitor_thread.start()
+            log("Microphone monitor started (pre-buffer).")
+        except Exception as e:
+            log_error(f"Pre-buffer monitor unavailable, using on-demand capture: {e}")
+            self._legacy_capture = True
+            self._stop_monitor_internal(close_stream=True)
+
+    def _open_input_stream(self):
+        if self.stream:
             return True
-        with self._lock:
-            self.frames = []
-        self.is_recording = True
         try:
             self.stream = self.audio.open(
                 format=self.format,
@@ -610,16 +657,88 @@ class AudioRecorder:
                 input=True,
                 frames_per_buffer=self.chunk,
             )
-            threading.Thread(target=self._record_loop, daemon=True).start()
+            return True
+        except Exception as e:
+            log_error(f"Error opening microphone stream: {e}")
+            self.stream = None
+            return False
+
+    def _close_input_stream(self):
+        try:
+            if self.stream:
+                self.stream.stop_stream()
+                self.stream.close()
+        except Exception as e:
+            log_error(f"Error closing stream: {e}")
+        finally:
+            self.stream = None
+
+    def _stop_monitor_internal(self, *, close_stream):
+        was_running = self._monitor_running
+        self._monitor_running = False
+        if was_running and self._monitor_thread and self._monitor_thread.is_alive():
+            try:
+                self._monitor_thread.join(timeout=2.0)
+            except Exception:
+                pass
+        self._monitor_thread = None
+        if close_stream:
+            self._close_input_stream()
+
+    def _monitor_loop(self):
+        backoff_s = 0.2
+        while self._monitor_running:
+            try:
+                if not self.stream and not self._open_input_stream():
+                    time.sleep(min(backoff_s, 2.0))
+                    backoff_s = min(backoff_s * 1.5, 2.0)
+                    continue
+                backoff_s = 0.2
+                data = self.stream.read(self.chunk, exception_on_overflow=False)
+                if self.is_recording:
+                    with self._lock:
+                        self.frames.append(data)
+                else:
+                    self._ring.push(data)
+            except Exception:
+                self._close_input_stream()
+                if not self._monitor_running:
+                    break
+                time.sleep(backoff_s)
+                backoff_s = min(backoff_s * 1.5, 2.0)
+
+    def start(self):
+        if self.is_recording:
+            return True
+
+        if not self._legacy_capture and self._monitor_running:
+            with self._lock:
+                self.frames = []
+                pre = self._ring.snapshot()
+                if pre:
+                    self.frames.append(pre)
+            self.is_recording = True
+            log("Recording started...")
+            return True
+
+        with self._lock:
+            self.frames = []
+        self.is_recording = True
+        try:
+            if not self._open_input_stream():
+                raise RuntimeError("microphone unavailable")
+            threading.Thread(
+                target=self._legacy_record_loop, daemon=True, name="CyberScribeRecord"
+            ).start()
             log("Recording started...")
             return True
         except Exception as e:
             log_error(f"Error starting recording: {e}")
             self.is_recording = False
-            self.stream = None
+            self._close_input_stream()
             return False
 
-    def _record_loop(self):
+    def _legacy_record_loop(self):
         while self.is_recording and self.stream:
             try:
                 data = self.stream.read(self.chunk, exception_on_overflow=False)
@@ -651,13 +770,10 @@ class AudioRecorder:
             return None
         self.is_recording = False
         log("Recording stopped...")
-        try:
-            if self.stream:
-                self.stream.stop_stream()
-                self.stream.close()
-                self.stream = None
-        except Exception as e:
-            log_error(f"Error closing stream: {e}")
+
+        using_monitor = not self._legacy_capture and self._monitor_running
+        if not using_monitor:
+            self._close_input_stream()
 
         with self._lock:
             frames = list(self.frames)
@@ -684,6 +800,7 @@ class AudioRecorder:
 
     def terminate(self):
         self.is_recording = False
+        self._stop_monitor_internal(close_stream=True)
         self.cleanup_temps()
         try:
             self.audio.terminate()
@@ -838,6 +955,8 @@ class CyberScribeApp:
 
         self.config = ConfigManager()
         self.recorder = AudioRecorder()
+        self.recorder.set_pre_buffer_ms(self.config.get("pre_buffer_ms"))
+        self.recorder.start_background_capture()
         self.transcriber = Transcriber(self.config)
         self.is_recording = False
         self.auto_stop_timer = None
