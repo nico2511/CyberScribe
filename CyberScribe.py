@@ -557,6 +557,7 @@ class AudioRecorder:
         self._monitor_thread = None
         self._legacy_capture = True
         self._last_rms = 0.0
+        self._vu_level_smooth = 0.0
 
     def set_pre_buffer_ms(self, pre_buffer_ms):
         """Configure pre-roll duration; call before ``start_background_capture``."""
@@ -574,15 +575,17 @@ class AudioRecorder:
 
     def get_audio_level(self):
         with self._lock:
-            return self._last_rms
+            return self._vu_level_smooth
 
     def _update_level(self, chunk: bytes):
         from overlay_ui import pcm16_chunk_rms
 
         if not chunk:
             return
+        raw = pcm16_chunk_rms(chunk)
         with self._lock:
-            self._last_rms = pcm16_chunk_rms(chunk)
+            self._last_rms = raw
+            self._vu_level_smooth = max(raw, self._vu_level_smooth * 0.75)
 
     def start_background_capture(self):
         """Keep the mic open and fill the ring buffer when pre-buffer is enabled."""
@@ -944,6 +947,8 @@ class CyberScribeApp:
         self._escape_listener = None
         self._tray_mode = "loading"
         self._has_nvidia = detect_nvidia_gpu()
+        self._audio_process_lock = threading.Lock()
+        self._audio_process_paths = set()
 
         self._update_checking = False
         self._update_downloading = False
@@ -1485,6 +1490,7 @@ class CyberScribeApp:
             return
 
         self.is_recording = True
+        self.recorder._vu_level_smooth = 0.0
         self._record_started = time.monotonic()
         self._session_profile = self.config.get("transcription_profile") or "fast"
         self.update_tray_icon(state="recording")
@@ -1517,7 +1523,9 @@ class CyberScribeApp:
             self.auto_stop_timer.cancel()
             self.auto_stop_timer = None
 
-        self.recorder.stop()
+        audio_path = self.recorder.stop()
+        if audio_path:
+            self.recorder._safe_remove(audio_path)
         self.overlay.show_state(
             OverlayState.CANCELLED,
             pill_text="Annulé",
@@ -1752,6 +1760,21 @@ class CyberScribeApp:
         profile=None,
         dictation_duration_s=0.0,
     ):
+        if not audio_path:
+            return
+        with self._audio_process_lock:
+            if audio_path in self._audio_process_paths:
+                log("Skipping duplicate process_audio for the same capture file.")
+                return
+            self._audio_process_paths.add(audio_path)
+        if not os.path.isfile(audio_path):
+            log_error(f"process_audio: missing capture file (already handled?): {audio_path}")
+            with self._audio_process_lock:
+                self._audio_process_paths.discard(audio_path)
+            self.queue.put(("overlay_error", "✕ Erreur", "Réessaie avec F8"))
+            self.queue.put(("tray_state", "ready"))
+            return
+
         log("Transcribing...")
         text = None
         transcribe_s = 0.0
@@ -1793,6 +1816,8 @@ class CyberScribeApp:
             self.queue.put(("tray_state", "ready"))
             return
         finally:
+            with self._audio_process_lock:
+                self._audio_process_paths.discard(audio_path)
             self.recorder._safe_remove(audio_path)
 
         if text:

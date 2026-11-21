@@ -9,11 +9,14 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from overlay_ui import (  # noqa: E402
+    LISTEN_RED,
     OverlayState,
     StatusOverlay,
     format_pasted_detail,
     format_record_timer,
     recording_display_tick,
+    scale_vu_level,
+    vu_bar_height,
 )
 
 def _display_usable() -> bool:
@@ -109,6 +112,54 @@ class OverlayTkIntegrationTest(unittest.TestCase):
             pre_buffer_ms=1000,
         )
         self._pump(4)
+
+    def test_listening_border_is_red_not_cyan(self):
+        self.overlay.show_state(
+            OverlayState.LISTENING,
+            pill_text="● Écoute",
+            timer_text=format_record_timer(0, 25),
+            pre_buffer_ms=1000,
+        )
+        self._pump()
+        self.assertEqual(self.overlay.window.cget("bg"), LISTEN_RED)
+
+    def test_chrono_visible_with_nonzero_width(self):
+        self.overlay.show_state(
+            OverlayState.LISTENING,
+            pill_text="● Écoute",
+            timer_text=format_record_timer(7, 25),
+            pre_buffer_ms=1000,
+        )
+        self._pump(3)
+        self.assertTrue(self.overlay._timer.winfo_ismapped())
+        self.assertGreater(self.overlay._timer.winfo_width(), 40)
+        self.assertEqual(self.overlay._timer.cget("text"), "0:07 / 0:25")
+
+    def test_vu_bars_scale_with_injected_levels(self):
+        level = scale_vu_level(0.08)
+        self.assertGreater(level, 0.25)
+        self.assertGreater(vu_bar_height(level, 22), 4)
+
+        self.overlay.set_level_provider(lambda: 0.08)
+        self.overlay.set_timer_provider(lambda: (1.0, 25))
+        self.overlay.show_state(
+            OverlayState.LISTENING,
+            pill_text="● Écoute",
+            timer_text=format_record_timer(1, 25),
+            pre_buffer_ms=1000,
+        )
+        self._pump(3)
+        self.overlay._vu_history = [scale_vu_level(0.08)] * 48
+        self.overlay._draw_vu_meter(0.1)
+        self._pump()
+        items = self.overlay._canvas.find_all()
+        self.assertGreater(len(items), 10)
+        heights = [
+            self.overlay._canvas.coords(i)[3] - self.overlay._canvas.coords(i)[1]
+            for i in items
+            if self.overlay._canvas.type(i) == "rectangle"
+        ]
+        self.assertTrue(any(h > 4 for h in heights))
 
 
 if __name__ == "__main__":

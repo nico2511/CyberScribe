@@ -19,9 +19,8 @@ ACCENT_CYAN = "#00f2ff"
 CYAN_DIM = "#0e7490"
 CYAN_BRIGHT = "#00f2ff"
 LISTEN_RED = "#e11d48"
-OVERLAY_W = 400
+OVERLAY_W = 420
 OVERLAY_H = 38
-PILL_W = 132
 BAR_COUNT = 48
 VU_REFRESH_MS = 40
 ENDING_SOON_SECONDS = 3
@@ -53,7 +52,7 @@ class OverlayPalette:
 
 
 STATE_PALETTE = {
-    OverlayState.LISTENING: OverlayPalette(ACCENT_CYAN, LISTEN_RED, "#ffffff", ACCENT_CYAN),
+    OverlayState.LISTENING: OverlayPalette(LISTEN_RED, LISTEN_RED, "#ffffff", ACCENT_CYAN),
     OverlayState.ENDING_SOON: OverlayPalette("#f59e0b", "#f59e0b", "#111827", "#fbbf24"),
     OverlayState.TRANSCRIBING: OverlayPalette(ACCENT_CYAN, ACCENT_CYAN, "#0b1120", "#94a3b8"),
     OverlayState.PASTED: OverlayPalette("#22c55e", "#22c55e", "#0b1120", "#bbf7d0"),
@@ -140,6 +139,19 @@ def pcm16_chunk_rms(chunk: bytes) -> float:
     sum_sq = sum(s * s for s in samples)
     rms = math.sqrt(sum_sq / n)
     return min(1.0, rms / 32768.0)
+
+
+def scale_vu_level(raw_rms: float) -> float:
+    """Map raw PCM RMS (often 0.01–0.12 for speech) to 0..1 bar height."""
+    raw_rms = max(0.0, float(raw_rms))
+    boosted = min(1.0, raw_rms * 18.0)
+    return boosted ** 0.55
+
+
+def vu_bar_height(display_level: float, canvas_h: int) -> int:
+    display_level = max(0.0, min(1.0, float(display_level)))
+    canvas_h = max(4, int(canvas_h))
+    return max(2, int(display_level * (canvas_h - 2)))
 
 
 def vu_meter_bar_levels(
@@ -241,9 +253,9 @@ class StatusOverlay:
             self._inner,
             text="",
             font=("Segoe UI Semibold", 10),
-            width=16,
             anchor="w",
-            padx=8,
+            padx=10,
+            pady=2,
         )
         self._pill.pack(side="left", fill="y")
 
@@ -251,16 +263,19 @@ class StatusOverlay:
         self._body.pack(side="left", fill="both", expand=True, padx=(4, 6), pady=2)
 
         self._vu_row = tk.Frame(self._body, bg=BG_DARK)
-        self._canvas = tk.Canvas(self._vu_row, height=20, bg=BG_DARK, highlightthickness=0)
-        self._canvas.pack(side="left", fill="both", expand=True)
+        self._vu_row.columnconfigure(0, weight=1)
+        self._vu_row.columnconfigure(1, weight=0, minsize=96)
+        self._canvas = tk.Canvas(self._vu_row, height=22, bg=BG_DARK, highlightthickness=0)
+        self._canvas.grid(row=0, column=0, sticky="ew")
         self._timer = tk.Label(
             self._vu_row,
-            text="",
+            text="0:00 / 0:25",
             font=("Consolas", 10),
             bg=BG_DARK,
             anchor="e",
+            width=11,
         )
-        self._timer.pack(side="right", padx=(6, 0))
+        self._timer.grid(row=0, column=1, sticky="e", padx=(6, 0))
 
         self._progress = tk.Canvas(self._body, height=2, bg=BG_DARK, highlightthickness=0)
 
@@ -332,12 +347,14 @@ class StatusOverlay:
 
         if self._pill:
             self._pill.config(text=pill_text)
+        if self.window:
+            self.window.update_idletasks()
 
         show_vu = state in (OverlayState.LISTENING, OverlayState.ENDING_SOON)
         if show_vu:
             self._show_recording_layout()
             if self._timer:
-                self._timer.config(text=timer_text)
+                self._timer.config(text=timer_text or "0:00 / 0:25")
             if state == OverlayState.ENDING_SOON and self._progress:
                 self._progress.pack(fill="x")
             elif self._progress:
@@ -395,6 +412,7 @@ class StatusOverlay:
         if self._level_provider:
             try:
                 level = float(self._level_provider())
+                level = scale_vu_level(level)
             except Exception:
                 level = 0.0
         with self._lock:
@@ -433,8 +451,9 @@ class StatusOverlay:
             return
         c = self._canvas
         c.delete("all")
-        w = max(10, c.winfo_width())
-        h = max(8, c.winfo_height())
+        c.update_idletasks()
+        w = max(80, c.winfo_width())
+        h = max(10, c.winfo_height())
         with self._lock:
             bars, split = vu_meter_bar_levels(self._vu_history, pre_buffer_bars=self._pre_buffer_bars)
         bar_w = max(2, w // BAR_COUNT)
@@ -445,7 +464,7 @@ class StatusOverlay:
         for i, level in enumerate(bars):
             x0 = i * bar_w
             x1 = x0 + bar_w - gap
-            bh = max(2, int(level * (h - 2)))
+            bh = vu_bar_height(level, h)
             color = dim if split >= 0 and i < split else bright
             c.create_rectangle(x0, h - bh, x1, h, fill=color, outline="")
 

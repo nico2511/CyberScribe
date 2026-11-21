@@ -20,6 +20,8 @@ from overlay_ui import (  # noqa: E402
     pcm16_chunk_rms,
     pre_buffer_bar_count,
     recording_display_tick,
+    scale_vu_level,
+    vu_bar_height,
     vu_meter_bar_levels,
 )
 
@@ -108,6 +110,10 @@ class VuMeterTest(unittest.TestCase):
 
     def test_pre_buffer_bar_count_one_second(self):
         self.assertEqual(pre_buffer_bar_count(1000, refresh_hz=25.0), 25)
+
+    def test_scale_vu_level_typical_speech(self):
+        self.assertGreater(scale_vu_level(0.05), 0.2)
+        self.assertGreater(vu_bar_height(scale_vu_level(0.05), 22), 4)
 
 
 if __name__ == "__main__":
