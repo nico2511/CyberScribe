@@ -98,33 +98,53 @@ def main():
     root.withdraw()
     app = CyberScribe.CyberScribeApp()
     app.config.set("first_run_done", True)
+    app._tray_mode = "ready"
+    app.transcriber.loading = False
+    app._has_nvidia = False
 
     open_settings_window(app)
     app.root.update()
-    nb = None
-    for child in app.settings_window.winfo_children():
-        for sub in child.winfo_children():
-            if sub.winfo_class() == "TNotebook":
-                nb = sub
-                break
-    tabs = ["Dictée", "Micro", "Moteur", "Système"]
-    for i, tab in enumerate(tabs):
-        nb.select(i)
+
+    def _click_tab(tab_name: str):
+        def _walk(widget):
+            for child in widget.winfo_children():
+                if child.winfo_class() == "Label" and child.cget("text") == tab_name:
+                    child.event_generate("<Button-1>")
+                    return True
+                if _walk(child):
+                    return True
+            return False
+
+        _walk(app.settings_window)
+        app.root.update_idletasks()
         app.root.update()
-        _save(app.settings_window, f"config-tab-{tab.lower().replace('è', 'e')}.png")
+
+    tabs = ["Dictée", "Micro", "Moteur", "Système"]
+    for tab in tabs:
+        _click_tab(tab)
+        safe = tab.lower().replace("è", "e").replace("é", "e")
+        _save(app.settings_window, f"config-tab-{safe}.png")
 
     app.settings_window.destroy()
     app.config.set("first_run_done", False)
     open_first_run_wizard(app)
     app.root.update()
+    def _click_continue(win):
+        def _walk(widget):
+            for child in widget.winfo_children():
+                if child.winfo_class() == "Button" and child.cget("text") == ">> CONTINUER <<":
+                    child.invoke()
+                    return True
+                if _walk(child):
+                    return True
+            return False
+
+        _walk(win)
+
     for step in (1, 2, 3):
         _save(app.first_run_window, f"first-run-step-{step}.png")
-        for child in app.first_run_window.winfo_children():
-            for btn in child.winfo_children():
-                if getattr(btn, "cget", None) and btn.winfo_class() == "Button":
-                    if btn.cget("text") == ">> CONTINUER <<":
-                        btn.invoke()
-                        break
+        if step < 3:
+            _click_continue(app.first_run_window)
         app.root.update()
 
     overlay = StatusOverlay(root)

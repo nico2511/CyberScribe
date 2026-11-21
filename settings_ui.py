@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
 
 from audio_devices import enumerate_input_devices
 from audio_pre_buffer import clamp_pre_buffer_ms
@@ -22,25 +22,48 @@ from ui_theme import (
     C_ACCENT,
     C_BG,
     C_CARD_BORDER,
-    C_CARD_SELECTED,
     C_INPUT_BG,
     C_INPUT_FG,
     C_MUTED,
     C_TEXT,
     C_WARN,
+    CONFIG_WINDOW_HEIGHT,
+    CONFIG_WINDOW_WIDTH,
+    CONTENT_PADX,
     FONT_MONO,
     FONT_MONO_SMALL,
     FONT_UI,
-    FONT_UI_BOLD,
     FONT_UI_SMALL,
-    FONT_UI_TITLE,
     LANGUAGE_LABELS,
-    PROFILE_CARD_COPY,
+)
+from ui_widgets import (
+    DarkDropdown,
+    PreBufferCanvas,
+    TabStrip,
+    build_profile_cards,
+    config_footer,
+    config_shell,
+    dark_entry,
+    muted_rule,
+    outline_button,
+    section_header,
 )
 
 
+def _header_status(app) -> str:
+    states = {
+        "ready": "prêt",
+        "loading": "chargement",
+        "recording": "écoute",
+        "transcribing": "transcription",
+    }
+    mode = states.get(getattr(app, "_tray_mode", "ready"), "prêt")
+    model = str(app.config.get("model_size") or "base")
+    dev = resolve_device_label(str(app.config.get("device") or "auto"), app.has_nvidia)
+    return f"● {mode} · {model} · {dev}"
+
+
 def open_settings_window(app):
-    """Open or focus the tabbed configuration window on ``app``."""
     if app.settings_window and app.settings_window.winfo_exists():
         try:
             app.settings_window.lift()
@@ -53,118 +76,56 @@ def open_settings_window(app):
     app.settings_window = root
     root.title(f"CyberScribe — Configuration v{app.version}")
     root.configure(bg=C_ACCENT)
-
-    width, height = 520, min(720, max(520, root.winfo_screenheight() - 100))
     ws, hs = root.winfo_screenwidth(), root.winfo_screenheight()
-    x = (ws // 2) - (width // 2)
-    y = max(20, (hs // 2) - (height // 2))
-    root.geometry(f"{width}x{height}+{x}+{y}")
-    root.minsize(480, 480)
+    x = (ws - CONFIG_WINDOW_WIDTH) // 2
+    y = max(16, (hs - CONFIG_WINDOW_HEIGHT) // 2)
+    root.geometry(f"{CONFIG_WINDOW_WIDTH}x{CONFIG_WINDOW_HEIGHT}+{x}+{y}")
+    root.minsize(CONFIG_WINDOW_WIDTH, 520)
+    root.resizable(True, True)
     root.attributes("-topmost", True)
     root.after(100, lambda: root.attributes("-topmost", False))
 
-    outer = tk.Frame(root, bg=C_BG)
-    outer.pack(fill="both", expand=True, padx=2, pady=2)
+    outer, host = config_shell(root, "/// Configuration", _header_status(app))
+    tab_dictee = tk.Frame(host, bg=C_BG)
+    tab_micro = tk.Frame(host, bg=C_BG)
+    tab_moteur = tk.Frame(host, bg=C_BG)
+    tab_systeme = tk.Frame(host, bg=C_BG)
+    frames = {"Dictée": tab_dictee, "Micro": tab_micro, "Moteur": tab_moteur, "Système": tab_systeme}
+    TabStrip(host, list(frames.keys()), frames)
 
-    header = tk.Frame(outer, bg=C_BG)
-    header.pack(fill="x", padx=16, pady=(12, 4))
-    tk.Label(
-        header,
-        text="/// Configuration",
-        bg=C_BG,
-        fg=C_ACCENT,
-        font=FONT_UI_TITLE,
-    ).pack(side="left")
-    status = app.tray_status_short()
-    tk.Label(
-        header,
-        text=status,
-        bg=C_BG,
-        fg=C_MUTED,
-        font=FONT_UI_SMALL,
-    ).pack(side="right")
-
-    notebook = ttk.Notebook(outer)
-    notebook.pack(fill="both", expand=True, padx=8, pady=(4, 0))
-
-    tab_dictee = tk.Frame(notebook, bg=C_BG)
-    tab_micro = tk.Frame(notebook, bg=C_BG)
-    tab_moteur = tk.Frame(notebook, bg=C_BG)
-    tab_systeme = tk.Frame(notebook, bg=C_BG)
-    notebook.add(tab_dictee, text="Dictée")
-    notebook.add(tab_micro, text="Micro")
-    notebook.add(tab_moteur, text="Moteur")
-    notebook.add(tab_systeme, text="Système")
-
-    style = ttk.Style(root)
-    style.theme_use("clam")
-    style.configure("TNotebook", background=C_BG, borderwidth=0)
-    style.configure("TNotebook.Tab", background=C_BG, foreground=C_MUTED, font=FONT_UI_BOLD, padding=(12, 6))
-    style.map(
-        "TNotebook.Tab",
-        background=[("selected", C_BG)],
-        foreground=[("selected", C_ACCENT)],
-    )
-    style.configure(
-        "TCombobox",
-        fieldbackground=C_INPUT_BG,
-        background=C_INPUT_BG,
-        foreground=C_INPUT_FG,
-    )
-
-    # --- Dictée tab ---
     hk_var = tk.StringVar(root, value=normalize_hotkey(app.config.get("hotkey")))
     hk_display_var = tk.StringVar(root, value=display_hotkey(hk_var.get()))
     hk_status_var = tk.StringVar(root, value="")
 
-    def section(parent, title, help_text=""):
-        tk.Label(parent, text=title, bg=C_BG, fg=C_ACCENT, font=FONT_UI_BOLD).pack(
-            anchor="w", padx=16, pady=(14, 2)
-        )
-        if help_text:
-            tk.Label(
-                parent,
-                text=help_text,
-                bg=C_BG,
-                fg=C_MUTED,
-                font=FONT_UI_SMALL,
-                wraplength=440,
-                justify="left",
-            ).pack(anchor="w", padx=16, pady=(0, 6))
+    # --- Dictée ---
+    row_hk_lang = tk.Frame(tab_dictee, bg=C_BG)
+    row_hk_lang.pack(fill="x")
+    col_hk = tk.Frame(row_hk_lang, bg=C_BG)
+    col_lang = tk.Frame(row_hk_lang, bg=C_BG)
+    col_hk.pack(side="left", fill="both", expand=True, padx=(CONTENT_PADX, 8))
+    col_lang.pack(side="left", fill="both", expand=True, padx=(8, CONTENT_PADX))
 
-    section(tab_dictee, ">> Raccourci", "Cliquez Capturer, puis appuyez sur une touche ou un bouton souris.")
-
-    hk_row = tk.Frame(tab_dictee, bg=C_BG)
-    hk_row.pack(fill="x", padx=16)
+    section_header(col_hk, ">> Raccourci", "Cliquez Capturer, puis appuyez sur une touche\nou un bouton souris.")
+    hk_row = tk.Frame(col_hk, bg=C_BG)
+    hk_row.pack(fill="x", pady=(0, 4))
     hk_display = tk.Label(
         hk_row,
         textvariable=hk_display_var,
         bg=C_INPUT_BG,
         fg=C_INPUT_FG,
-        font=FONT_UI,
-        relief="flat",
+        font=FONT_MONO,
         anchor="w",
         padx=10,
-        pady=6,
-        takefocus=1,
+        pady=8,
         highlightthickness=1,
-        highlightbackground=C_INPUT_BG,
-        highlightcolor=C_ACCENT,
+        highlightbackground=C_CARD_BORDER,
+        takefocus=1,
     )
-    hk_display.pack(side="left", fill="x", expand=True, padx=(0, 8))
-    capture_btn = tk.Button(
-        hk_row,
-        text="[ CAPTURER ]",
-        bg=C_CARD_BORDER,
-        fg="white",
-        font=FONT_UI_SMALL,
-        relief="flat",
-        padx=10,
-        pady=4,
-    )
+    hk_display.pack(side="left", fill="x", expand=True, padx=(0, 6))
+    capture_btn = outline_button(hk_row, "[ CAPTURER ]", lambda: _start_capture(), padx=8)
     capture_btn.pack(side="right")
 
-    section(tab_dictee, ">> Langue")
+    section_header(col_lang, ">> Langue")
     lang_codes = sorted(VALID_LANGUAGES, key=lambda c: LANGUAGE_LABELS.get(c, c))
     lang_labels = [LANGUAGE_LABELS.get(c, c) for c in lang_codes]
     lang_var = tk.StringVar(root)
@@ -177,135 +138,88 @@ def open_settings_window(app):
                 return code
         return "fr"
 
-    lang_combo = ttk.Combobox(tab_dictee, textvariable=lang_var, values=lang_labels, font=FONT_UI, state="readonly")
-    lang_combo.pack(padx=16, anchor="w")
+    DarkDropdown(col_lang, lang_var, lang_labels).pack(fill="x")
 
-    section(
+    def _start_capture():
+        if app.hotkey_capture:
+            app.cancel_hotkey_capture()
+            return
+        capture_btn.config(text="[ ANNULER ]")
+        hk_status_var.set("Préparation de la capture…")
+        hk_display.config(highlightbackground=C_ACCENT)
+        root.bind("<KeyPress>", app.handle_tk_capture_keypress)
+        hk_display.bind("<KeyPress>", app.handle_tk_capture_keypress)
+        if not app.start_hotkey_capture():
+            _unbind_tk_capture()
+            capture_btn.config(text="[ CAPTURER ]")
+            hk_status_var.set("Capture impossible.")
+
+    section_header(
         tab_dictee,
         ">> Profil",
-        "Choisis entre vitesse et justesse. Le modèle n'est pas rechargé.",
+        help_lines=["Choisis entre vitesse et justesse.", "Le modèle n'est pas rechargé."],
     )
     profile_var = tk.StringVar(root, value=app.config.get("transcription_profile") or "fast")
-    profile_row = tk.Frame(tab_dictee, bg=C_BG)
-    profile_row.pack(fill="x", padx=12, pady=4)
+    build_profile_cards(tab_dictee, profile_var, lambda _k: None)
 
-    def _select_profile(key):
-        profile_var.set(key)
-
-    profile_cards = {}
-    for key in ("fast", "balanced", "accurate"):
-        title, subtitle = PROFILE_CARD_COPY[key]
-        card = tk.Frame(profile_row, bg=C_BG, highlightthickness=2, highlightbackground=C_CARD_BORDER)
-        card.pack(side="left", fill="both", expand=True, padx=4, ipady=8)
-
-        def _mk_handler(k):
-            return lambda e=None: _select_profile(k)
-
-        card.bind("<Button-1>", _mk_handler(key))
-        tk.Label(card, text=title, bg=C_BG, fg=C_TEXT, font=FONT_UI_BOLD).pack(pady=(8, 2))
-        tk.Label(card, text=subtitle, bg=C_BG, fg=C_MUTED, font=FONT_UI_SMALL, wraplength=120).pack(
-            pady=(0, 8)
-        )
-        profile_cards[key] = card
-
-    def _refresh_profile_cards(*_):
-        sel = profile_var.get()
-        for key, card in profile_cards.items():
-            color = C_CARD_SELECTED if key == sel else C_CARD_BORDER
-            card.config(highlightbackground=color)
-
-    profile_var.trace_add("write", _refresh_profile_cards)
-    _refresh_profile_cards()
-
-    section(
+    section_header(
         tab_dictee,
         ">> Pré-buffer",
-        "Garde en mémoire vive ce que tu dis juste avant F8… Rien n'est écrit sur le disque.",
+        help_lines=[
+            "Garde en mémoire vive ce que tu dis juste avant F8,",
+            "même si tu appuies un peu tard. Rien n'est écrit sur le disque.",
+        ],
     )
     pre_ms_init = clamp_pre_buffer_ms(app.config.get("pre_buffer_ms"))
     pre_sec_var = tk.DoubleVar(root, value=pre_ms_init / 1000.0)
-    pre_label_var = tk.StringVar(root)
+    pre_row = tk.Frame(tab_dictee, bg=C_BG)
+    pre_row.pack(fill="x", padx=CONTENT_PADX)
+    val_lbl = tk.Label(pre_row, text="", bg=C_BG, fg=C_INPUT_FG, font=FONT_MONO)
+    val_lbl.pack(side="right", padx=(8, 0))
+    pre_canvas = PreBufferCanvas(pre_row, pre_sec_var)
+    pre_canvas.pack(side="left", fill="x", expand=True)
+    pre_canvas.attach_value_label(val_lbl)
+    pre_canvas._draw()
 
-    def _format_pre_label(val_s):
-        if val_s <= 0.05:
-            return "off"
-        return f"{val_s:.1f}".replace(".", ",") + " s"
-
-    pre_label_var.set(_format_pre_label(pre_sec_var.get()))
-    pre_slider_row = tk.Frame(tab_dictee, bg=C_BG)
-    pre_slider_row.pack(fill="x", padx=16)
-    tk.Label(pre_slider_row, text="off", bg=C_BG, fg=C_MUTED, font=FONT_UI_SMALL).pack(side="left")
-    pre_scale = tk.Scale(
-        pre_slider_row,
-        from_=0,
-        to=3,
-        resolution=0.5,
-        orient="horizontal",
-        variable=pre_sec_var,
+    section_header(tab_dictee, ">> Durée max")
+    max_record_var = tk.StringVar(root, value=f"{app.config.get('max_record_seconds') or 25} s")
+    dur_row = tk.Frame(tab_dictee, bg=C_BG)
+    dur_row.pack(fill="x", padx=CONTENT_PADX, pady=(4, 0))
+    dark_entry(dur_row, max_record_var, width=7).pack(side="left")
+    hint_col = tk.Frame(dur_row, bg=C_BG)
+    hint_col.pack(side="left", padx=(12, 0))
+    hint_line1 = tk.Label(
+        hint_col,
+        text="Arrêt automatique (0 = sans limite).",
         bg=C_BG,
-        fg=C_TEXT,
-        highlightthickness=0,
-        troughcolor=C_INPUT_BG,
-        activebackground=C_ACCENT,
-        showvalue=0,
-        length=280,
+        fg=C_MUTED,
+        font=FONT_UI_SMALL,
+        anchor="w",
     )
-    pre_scale.pack(side="left", padx=8)
-    tk.Label(pre_slider_row, text="3 s", bg=C_BG, fg=C_MUTED, font=FONT_UI_SMALL).pack(side="left")
-    tk.Label(
-        pre_slider_row,
-        textvariable=pre_label_var,
-        bg=C_BG,
-        fg=C_INPUT_FG,
-        font=FONT_MONO,
-        width=8,
-    ).pack(side="right")
-
-    def _on_pre_slider(*_):
-        pre_label_var.set(_format_pre_label(pre_sec_var.get()))
-
-    pre_sec_var.trace_add("write", _on_pre_slider)
-
-    section(tab_dictee, ">> Durée max")
-    max_record_var = tk.StringVar(root, value=str(app.config.get("max_record_seconds") or 25))
-    max_row = tk.Frame(tab_dictee, bg=C_BG)
-    max_row.pack(fill="x", padx=16)
-    tk.Entry(
-        max_row,
-        textvariable=max_record_var,
-        width=8,
-        bg=C_INPUT_BG,
-        fg=C_INPUT_FG,
-        font=FONT_MONO,
-        relief="flat",
-    ).pack(side="left")
-    max_hint_var = tk.StringVar(root)
+    hint_line1.pack(anchor="w")
+    hint_line2 = tk.Frame(hint_col, bg=C_BG)
+    hint_line2.pack(anchor="w")
+    hint_pre = tk.Label(hint_line2, text="Avec le pré-buffer, l'audio peut atteindre ", bg=C_BG, fg=C_MUTED, font=FONT_UI_SMALL)
+    hint_pre.pack(side="left")
+    hint_val = tk.Label(hint_line2, text="26 s", bg=C_BG, fg=C_ACCENT, font=FONT_MONO)
+    hint_val.pack(side="left")
+    hint_dot = tk.Label(hint_line2, text=".", bg=C_BG, fg=C_MUTED, font=FONT_UI_SMALL)
+    hint_dot.pack(side="left")
 
     def _refresh_max_hint(*_):
         try:
-            mx = int(max_record_var.get())
+            mx = int(str(max_record_var.get()).replace("s", "").strip())
         except Exception:
             mx = int(DEFAULT_CONFIG["max_record_seconds"])
         pb = int(round(float(pre_sec_var.get()) * 1000))
-        max_hint_var.set(
-            f"Arrêt automatique (0 = sans limite). Avec le pré-buffer, l'audio peut atteindre {mx + int(pb / 1000)} s."
-        )
+        hint_val.config(text=f"{mx + int(pb / 1000)} s")
 
     max_record_var.trace_add("write", _refresh_max_hint)
     pre_sec_var.trace_add("write", _refresh_max_hint)
     _refresh_max_hint()
-    tk.Label(
-        tab_dictee,
-        textvariable=max_hint_var,
-        bg=C_BG,
-        fg=C_MUTED,
-        font=FONT_UI_SMALL,
-        wraplength=440,
-        justify="left",
-    ).pack(anchor="w", padx=16, pady=(4, 0))
 
-    # --- Micro tab ---
-    section(tab_micro, ">> Périphérique d'entrée", "Liste des micros vus par PyAudio.")
+    # --- Micro ---
+    section_header(tab_micro, ">> Périphérique d'entrée", "Liste des micros vus par PyAudio.")
     devices = enumerate_input_devices(app.recorder.audio)
     device_names = [d.name for d in devices]
     stored_device = app.config.get("input_device") or ""
@@ -314,15 +228,13 @@ def open_settings_window(app):
         mic_var.set(stored_device)
     elif device_names:
         mic_var.set(device_names[0])
-    else:
-        mic_var.set("")
+    DarkDropdown(tab_micro, mic_var, device_names or ["(aucun périphérique)"]).pack(
+        fill="x", padx=CONTENT_PADX
+    )
 
-    mic_combo = ttk.Combobox(tab_micro, textvariable=mic_var, values=device_names, font=FONT_UI, state="readonly")
-    mic_combo.pack(padx=16, anchor="w", fill="x")
-
-    section(tab_micro, ">> Niveau en direct")
-    vu_canvas = tk.Canvas(tab_micro, height=28, bg=C_INPUT_BG, highlightthickness=0, width=400)
-    vu_canvas.pack(padx=16, pady=8, anchor="w")
+    section_header(tab_micro, ">> Niveau en direct")
+    vu_canvas = tk.Canvas(tab_micro, height=36, bg=C_INPUT_BG, highlightthickness=1, highlightbackground=C_CARD_BORDER)
+    vu_canvas.pack(fill="x", padx=CONTENT_PADX, pady=8)
     vu_after = {"id": None}
 
     def _vu_tick():
@@ -338,52 +250,43 @@ def open_settings_window(app):
 
     _vu_tick()
 
-    # --- Moteur tab ---
-    section(tab_moteur, ">> Modèle", "Rechargé à l'enregistrement si la taille ou le dossier change.")
+    # --- Moteur ---
+    section_header(tab_moteur, ">> Modèle", "Rechargé à l'enregistrement si la taille ou le dossier change.")
     model_var = tk.StringVar(root, value=app.config.get("model_size"))
-    ttk.Combobox(
+    DarkDropdown(
         tab_moteur,
-        textvariable=model_var,
-        values=["tiny", "base", "small", "medium", "large-v3"],
-        font=FONT_UI,
-    ).pack(padx=16, anchor="w")
+        model_var,
+        ["tiny", "base", "small", "medium", "large-v3"],
+    ).pack(fill="x", padx=CONTENT_PADX)
 
-    section(tab_moteur, ">> Unité de calcul")
+    section_header(tab_moteur, ">> Unité de calcul")
     device_var = tk.StringVar(root, value=app.config.get("device"))
-    ttk.Combobox(tab_moteur, textvariable=device_var, values=["auto", "cpu", "cuda"], font=FONT_UI).pack(
-        padx=16, anchor="w"
-    )
+    DarkDropdown(tab_moteur, device_var, ["auto", "cpu", "cuda"]).pack(fill="x", padx=CONTENT_PADX)
     if app.has_nvidia:
+        banner = tk.Frame(tab_moteur, bg=C_INPUT_BG, highlightthickness=0)
+        banner.pack(fill="x", padx=CONTENT_PADX, pady=(10, 0))
+        tk.Frame(banner, bg=C_ACCENT, width=4).pack(side="left", fill="y")
         tk.Label(
-            tab_moteur,
-            text=">> Carte NVIDIA détectée : la transcription peut utiliser CUDA.",
-            bg=C_BG,
-            fg=C_ACCENT,
+            banner,
+            text=">> Carte NVIDIA détectée : la transcription utilisera CUDA.",
+            bg=C_INPUT_BG,
+            fg=C_TEXT,
             font=FONT_UI_SMALL,
-            wraplength=440,
-            justify="left",
-        ).pack(anchor="w", padx=16, pady=(8, 0))
+            anchor="w",
+            padx=10,
+            pady=8,
+        ).pack(side="left", fill="x", expand=True)
 
-    section(tab_moteur, ">> Précision")
+    section_header(tab_moteur, ">> Précision")
     compute_var = tk.StringVar(root, value=app.config.get("compute_type") or "int8")
-    ttk.Combobox(
+    DarkDropdown(
         tab_moteur,
-        textvariable=compute_var,
-        values=["int8", "int8_float16", "float16", "float32"],
-        font=FONT_UI,
-    ).pack(padx=16, anchor="w")
+        compute_var,
+        ["int8", "int8_float16", "float16", "float32"],
+    ).pack(fill="x", padx=CONTENT_PADX)
 
-    dev_label = resolve_device_label(device_var.get(), app.has_nvidia)
-    tk.Label(
-        tab_moteur,
-        text=f"Résolution actuelle : {dev_label}",
-        bg=C_BG,
-        fg=C_MUTED,
-        font=FONT_UI_SMALL,
-    ).pack(anchor="w", padx=16, pady=(12, 0))
-
-    # --- Système tab ---
-    section(
+    # --- Système ---
+    section_header(
         tab_systeme,
         ">> Mises à jour",
         "Recherche facultative sur GitHub Releases. Aucun texte dicté n'est envoyé.",
@@ -403,22 +306,16 @@ def open_settings_window(app):
         selectcolor=C_INPUT_BG,
         activebackground=C_BG,
         font=FONT_UI_SMALL,
-    ).pack(anchor="w", padx=16)
-    tk.Button(
-        tab_systeme,
-        text="[ VÉRIFIER LES MISES À JOUR ]",
-        command=app.manual_update_check,
-        bg=C_CARD_BORDER,
-        fg="white",
-        font=FONT_UI_SMALL,
-        relief="flat",
-    ).pack(anchor="w", padx=16, pady=8)
+    ).pack(anchor="w", padx=CONTENT_PADX)
+    outline_button(tab_systeme, "[ VÉRIFIER LES MISES À JOUR ]", app.manual_update_check).pack(
+        anchor="w", padx=CONTENT_PADX, pady=8
+    )
 
-    section(tab_systeme, ">> SHA256 de cet exécutable")
+    section_header(tab_systeme, ">> SHA256 de cet exécutable")
     sha_var = tk.StringVar(root, value="")
     sha_hint = tk.StringVar(root, value="")
     sha_row = tk.Frame(tab_systeme, bg=C_BG)
-    sha_row.pack(fill="x", padx=16)
+    sha_row.pack(fill="x", padx=CONTENT_PADX)
     sha_entry = tk.Entry(
         sha_row,
         textvariable=sha_var,
@@ -427,26 +324,20 @@ def open_settings_window(app):
         font=FONT_MONO_SMALL,
         relief="flat",
         readonlybackground=C_INPUT_BG,
+        highlightthickness=1,
+        highlightbackground=C_CARD_BORDER,
     )
     sha_entry.configure(state="readonly")
-    sha_entry.pack(side="left", fill="x", expand=True)
-
-    def _copy_sha():
-        app.copy_settings_sha(sha_var, sha_hint)
-
-    tk.Button(sha_row, text="Copier", command=_copy_sha, bg=C_CARD_BORDER, fg="white", relief="flat").pack(
-        side="left", padx=6
+    sha_entry.pack(side="left", fill="x", expand=True, ipady=4)
+    outline_button(sha_row, "Copier", lambda: app.copy_settings_sha(sha_var, sha_hint), padx=8).pack(
+        side="left", padx=(8, 0)
     )
-    tk.Label(tab_systeme, textvariable=sha_hint, bg=C_BG, fg=C_MUTED, font=FONT_UI_SMALL, wraplength=440).pack(
-        anchor="w", padx=16
+    tk.Label(tab_systeme, textvariable=sha_hint, bg=C_BG, fg=C_MUTED, font=FONT_UI_SMALL, wraplength=600).pack(
+        anchor="w", padx=CONTENT_PADX
     )
     app.kickoff_local_exe_hash(sha_var, sha_hint)
 
-    section(
-        tab_systeme,
-        ">> Dossier des modèles",
-        "Vide = dossier « models » à côté de l'application.",
-    )
+    section_header(tab_systeme, ">> Dossier des modèles", "Vide = dossier « models » à côté de l'application.")
     path_var = tk.StringVar(root, value=app.config.get_models_dir())
 
     def _browse_models():
@@ -460,18 +351,9 @@ def open_settings_window(app):
             path_var.set(os.path.normpath(chosen))
 
     models_row = tk.Frame(tab_systeme, bg=C_BG)
-    models_row.pack(fill="x", padx=16)
-    tk.Entry(
-        models_row,
-        textvariable=path_var,
-        bg=C_INPUT_BG,
-        fg=C_INPUT_FG,
-        font=FONT_UI,
-        relief="flat",
-    ).pack(side="left", fill="x", expand=True)
-    tk.Button(models_row, text="…", command=_browse_models, bg=C_INPUT_BG, fg=C_ACCENT, relief="flat", width=3).pack(
-        side="left", padx=4
-    )
+    models_row.pack(fill="x", padx=CONTENT_PADX)
+    dark_entry(models_row, path_var, width=48, mono=False).pack(side="left", fill="x", expand=True)
+    outline_button(models_row, "…", _browse_models, padx=6).pack(side="left", padx=(8, 0))
 
     beeps_var = tk.BooleanVar(root, value=bool(app.config.get("beeps")))
     tk.Checkbutton(
@@ -482,7 +364,14 @@ def open_settings_window(app):
         fg=C_TEXT,
         selectcolor=C_INPUT_BG,
         font=FONT_UI_SMALL,
-    ).pack(anchor="w", padx=16, pady=(12, 0))
+    ).pack(anchor="w", padx=CONTENT_PADX, pady=(12, 0))
+
+    def _unbind_tk_capture():
+        try:
+            root.unbind("<KeyPress>")
+            hk_display.unbind("<KeyPress>")
+        except Exception:
+            pass
 
     log_timings_var = tk.BooleanVar(root, value=bool(app.config.get("log_pipeline_timings")))
     tk.Checkbutton(
@@ -493,20 +382,12 @@ def open_settings_window(app):
         fg=C_TEXT,
         selectcolor=C_INPUT_BG,
         font=FONT_UI_SMALL,
-    ).pack(anchor="w", padx=16, pady=(4, 0))
+    ).pack(anchor="w", padx=CONTENT_PADX, pady=(4, 0))
 
-    # --- Hotkey capture ---
     def _set_hotkey_value(value):
         canon = normalize_hotkey(value)
         hk_var.set(canon)
         hk_display_var.set(display_hotkey(canon))
-
-    def _unbind_tk_capture():
-        try:
-            root.unbind("<KeyPress>")
-            hk_display.unbind("<KeyPress>")
-        except Exception:
-            pass
 
     def _capture_status(msg):
         try:
@@ -520,8 +401,8 @@ def open_settings_window(app):
             if not root.winfo_exists():
                 return
             _unbind_tk_capture()
-            capture_btn.config(state="normal", text="[ CAPTURER ]", bg=C_CARD_BORDER)
-            hk_display.config(highlightbackground=C_INPUT_BG)
+            capture_btn.config(text="[ CAPTURER ]")
+            hk_display.config(highlightbackground=C_CARD_BORDER)
             if value:
                 _set_hotkey_value(value)
                 hk_status_var.set(f"Raccourci détecté : {display_hotkey(value)}")
@@ -531,22 +412,6 @@ def open_settings_window(app):
             pass
 
     app.hotkey_capture_ui = {"on_status": _capture_status, "on_result": _capture_done}
-
-    def _start_capture():
-        if app.hotkey_capture:
-            app.cancel_hotkey_capture()
-            return
-        capture_btn.config(text="[ ANNULER ]", bg=C_WARN)
-        hk_status_var.set("Préparation de la capture…")
-        hk_display.config(highlightbackground=C_ACCENT)
-        root.bind("<KeyPress>", app.handle_tk_capture_keypress)
-        hk_display.bind("<KeyPress>", app.handle_tk_capture_keypress)
-        if not app.start_hotkey_capture():
-            _unbind_tk_capture()
-            capture_btn.config(text="[ CAPTURER ]", bg=C_CARD_BORDER)
-            hk_status_var.set("Capture impossible.")
-
-    capture_btn.config(command=_start_capture)
 
     def _on_close():
         if vu_after["id"]:
@@ -564,33 +429,9 @@ def open_settings_window(app):
 
     root.protocol("WM_DELETE_WINDOW", _on_close)
 
-    # --- Footer ---
-    footer = tk.Frame(outer, bg=C_BG)
-    footer.pack(fill="x", side="bottom", padx=16, pady=(8, 12))
-    tk.Label(
-        footer,
-        text="Les modifications s'appliquent à l'enregistrement.",
-        bg=C_BG,
-        fg=C_MUTED,
-        font=FONT_UI_SMALL,
-    ).pack(side="left")
-
-    def _test_dictation():
-        app.queue.put("toggle_recording")
-
-    tk.Button(
-        footer,
-        text="[ TESTER LA DICTÉE ]",
-        command=_test_dictation,
-        bg=C_CARD_BORDER,
-        fg="white",
-        font=FONT_UI_SMALL,
-        relief="flat",
-    ).pack(side="left", padx=(16, 0))
-
     def save():
         try:
-            max_record = int(max_record_var.get())
+            max_record = int(str(max_record_var.get()).replace("s", "").strip())
         except Exception:
             max_record = DEFAULT_CONFIG["max_record_seconds"]
         pre_buffer_ms = clamp_pre_buffer_ms(int(round(float(pre_sec_var.get()) * 1000)))
@@ -684,14 +525,8 @@ def open_settings_window(app):
         _on_close()
         app.sync_tray_menu()
 
-    tk.Button(
-        footer,
-        text=">> ENREGISTRER <<",
-        command=save,
-        bg=C_ACCENT,
-        fg="#0f172a",
-        font=FONT_UI_BOLD,
-        relief="flat",
-        padx=16,
-        pady=6,
-    ).pack(side="right")
+    config_footer(
+        outer,
+        on_test=lambda: app.queue.put("toggle_recording"),
+        on_save=save,
+    )

@@ -10,7 +10,7 @@
 #    python CyberScribe.py
 #
 # 3. COMPILATION EN .EXE (Mode Autonome)
-#    pyinstaller --noconsole --onefile --noconfirm --icon="app.ico" --hidden-import=audio_wav --hidden-import=audio_devices --hidden-import=cyber_config --hidden-import=hotkey_util --hidden-import=settings_ui --hidden-import=first_run_ui --hidden-import=ui_theme --hidden-import=overlay_ui --hidden-import=overlay_placement --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "<venv>/Lib/site-packages/faster_whisper/assets;faster_whisper/assets" --name "CyberScribe" CyberScribe.py
+#    pyinstaller --noconsole --onefile --noconfirm --icon="app.ico" --hidden-import=audio_wav --hidden-import=audio_devices --hidden-import=cyber_config --hidden-import=hotkey_util --hidden-import=settings_ui --hidden-import=first_run_ui --hidden-import=ui_theme --hidden-import=ui_widgets --hidden-import=overlay_ui --hidden-import=overlay_placement --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "<venv>/Lib/site-packages/faster_whisper/assets;faster_whisper/assets" --name "CyberScribe" CyberScribe.py
 #
 # ==================================================================================
 """
