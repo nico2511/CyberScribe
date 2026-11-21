@@ -13,9 +13,12 @@ from tests.whisper_test_support import install_cyberscribe_import_stubs  # noqa:
 
 from overlay_ui import (  # noqa: E402
     OverlayState,
+    TRANSITION_MS,
     ending_soon_remaining,
     format_pasted_detail,
     format_record_timer,
+    interpolate_palette,
+    lerp_hex_color,
     overlay_state_for_recording,
     pcm16_chunk_rms,
     pre_buffer_bar_count,
@@ -23,6 +26,7 @@ from overlay_ui import (  # noqa: E402
     scale_vu_level,
     vu_bar_height,
     vu_meter_bar_levels,
+    STATE_PALETTE,
 )
 
 
@@ -82,6 +86,21 @@ class SanitizeBeepsTest(unittest.TestCase):
         self.assertTrue(cfg["beeps"])
         cfg2 = self._cyber.sanitize_config({"beeps": 0})
         self.assertFalse(cfg2["beeps"])
+
+
+class OverlayTransitionTest(unittest.TestCase):
+    def test_lerp_midpoint(self):
+        mid = lerp_hex_color("#000000", "#ffffff", 0.5)
+        self.assertIn(mid.lower(), ("#7f7f7f", "#808080"))
+
+    def test_transition_duration_constants(self):
+        self.assertEqual(TRANSITION_MS, 200)
+
+    def test_interpolate_palette_endpoints(self):
+        src = STATE_PALETTE[OverlayState.LISTENING]
+        dst = STATE_PALETTE[OverlayState.TRANSCRIBING]
+        self.assertEqual(interpolate_palette(src, dst, 0.0).border, src.border)
+        self.assertEqual(interpolate_palette(src, dst, 1.0).border, dst.border)
 
 
 class VuMeterTest(unittest.TestCase):

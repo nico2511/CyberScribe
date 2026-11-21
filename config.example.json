@@ -10,5 +10,7 @@
     "check_updates": true,
     "models_dir": "%LOCALAPPDATA%\\CyberScribe\\models",
     "log_pipeline_timings": false,
-    "beeps": false
+    "beeps": false,
+    "input_device": "",
+    "first_run_done": false
 }

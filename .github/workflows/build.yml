@@ -30,7 +30,7 @@ jobs:
     - name: Build with PyInstaller
       run: |
         $VAD_PATH = python -c "import faster_whisper, os; print(os.path.join(os.path.dirname(faster_whisper.__file__), 'assets', 'silero_vad_v6.onnx'))"
-        pyinstaller --noconsole --onefile --noconfirm --hidden-import=updater --hidden-import=models_storage --hidden-import=dictation_pipeline --hidden-import=audio_wav --hidden-import=audio_pre_buffer --hidden-import=overlay_ui --hidden-import=overlay_placement --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "${VAD_PATH};faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
+        pyinstaller --noconsole --onefile --noconfirm --hidden-import=updater --hidden-import=models_storage --hidden-import=dictation_pipeline --hidden-import=audio_wav --hidden-import=audio_pre_buffer --hidden-import=audio_devices --hidden-import=cyber_config --hidden-import=hotkey_util --hidden-import=settings_ui --hidden-import=first_run_ui --hidden-import=ui_theme --hidden-import=ui_widgets --hidden-import=overlay_ui --hidden-import=overlay_placement --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "${VAD_PATH};faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
 
     - name: Read application version
       id: appver

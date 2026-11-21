@@ -39,7 +39,7 @@ python CyberScribe.py
 
 ```bash
 pip install -r requirements.txt pyinstaller
-pyinstaller --noconsole --onefile --noconfirm --hidden-import=updater --hidden-import=models_storage --hidden-import=dictation_pipeline --hidden-import=audio_wav --hidden-import=audio_pre_buffer --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "venv\Lib\site-packages\faster_whisper\assets\silero_vad_v6.onnx;faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
+pyinstaller --noconsole --onefile --noconfirm --hidden-import=updater --hidden-import=models_storage --hidden-import=dictation_pipeline --hidden-import=audio_wav --hidden-import=audio_pre_buffer --hidden-import=audio_devices --hidden-import=cyber_config --hidden-import=hotkey_util --hidden-import=settings_ui --hidden-import=first_run_ui --hidden-import=ui_theme --hidden-import=ui_widgets --hidden-import=overlay_ui --hidden-import=overlay_placement --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "venv\Lib\site-packages\faster_whisper\assets\silero_vad_v6.onnx;faster_whisper/assets" --icon "app.ico" --name "CyberScribe" CyberScribe.py
 ```
 
 *(Adjust the path to `silero_vad_v6.onnx` according to your Python environment.)*

@@ -10,7 +10,7 @@
 #    python CyberScribe.py
 #
 # 3. COMPILATION EN .EXE (Mode Autonome)
-#    pyinstaller --noconsole --onefile --noconfirm --icon="app.ico" --hidden-import=audio_wav --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "<venv>/Lib/site-packages/faster_whisper/assets;faster_whisper/assets" --name "CyberScribe" CyberScribe.py
+#    pyinstaller --noconsole --onefile --noconfirm --icon="app.ico" --hidden-import=audio_wav --hidden-import=audio_devices --hidden-import=cyber_config --hidden-import=hotkey_util --hidden-import=settings_ui --hidden-import=first_run_ui --hidden-import=ui_theme --hidden-import=ui_widgets --hidden-import=overlay_ui --hidden-import=overlay_placement --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "<venv>/Lib/site-packages/faster_whisper/assets;faster_whisper/assets" --name "CyberScribe" CyberScribe.py
 #
 # ==================================================================================
 """
@@ -31,10 +31,29 @@ import ctypes
 from io import BytesIO
 import tkinter as tk
 
+from audio_devices import resolve_input_device_index
 from audio_pre_buffer import (
     CircularByteBuffer,
     clamp_pre_buffer_ms,
     pre_buffer_capacity_bytes,
+)
+from cyber_config import (
+    ALLOWED_KEYS,
+    DEFAULT_CONFIG,
+    MAX_RECORD_SECONDS_CAP,
+    VALID_COMPUTE,
+    VALID_DEVICES,
+    VALID_LANGUAGES,
+    VALID_MODELS,
+    VALID_PROFILES,
+    sanitize_config as _sanitize_config_impl,
+)
+from hotkey_util import (
+    MOUSE_HOTKEYS,
+    display_hotkey,
+    format_hotkey,
+    is_mouse_hotkey,
+    normalize_hotkey,
 )
 from overlay_ui import (
     OverlayState,
@@ -62,16 +81,6 @@ else:
 # Configure Logging (privacy-conscious: no transcription content logged)
 LOG_FILE = os.path.join(APP_DIR, "debug_CyberScribe.log")
 MAX_LOG_SIZE = 1 * 1024 * 1024  # 1 MB
-
-VALID_LANGUAGES = {
-    "auto", "en", "fr", "de", "es", "it", "ja", "zh", "nl", "uk", "pt", "ru",
-}
-VALID_MODELS = {"tiny", "base", "small", "medium", "large-v3"}
-VALID_DEVICES = {"auto", "cpu", "cuda"}
-VALID_COMPUTE = {"int8", "int8_float16", "float16", "float32"}
-VALID_PROFILES = {"fast", "balanced", "accurate"}
-MAX_RECORD_SECONDS_CAP = 600
-
 
 def _safe_print(msg):
     """print() raises when stdout is None (PyInstaller --noconsole)."""
@@ -248,195 +257,10 @@ def get_icon_image(b64_str):
 TRAY_PRE_BUFFER_CHOICES_MS = (0, 500, 1000, 2000)
 
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
-DEFAULT_CONFIG = {
-    "hotkey": "F8",
-    "language": "fr",
-    "model_size": "base",
-    "device": "auto",
-    "compute_type": "int8",
-    "transcription_profile": "fast",
-    "max_record_seconds": 25,
-    "pre_buffer_ms": 1000,
-    "check_updates": True,
-    "models_dir": "",
-    "log_pipeline_timings": False,
-    "beeps": False,
-}
-ALLOWED_KEYS = set(DEFAULT_CONFIG.keys())
-
-HOTKEY_MODIFIERS = {
-    "ctrl": "<ctrl>",
-    "control": "<ctrl>",
-    "alt": "<alt>",
-    "shift": "<shift>",
-    "cmd": "<cmd>",
-    "win": "<cmd>",
-}
-
-# Canonical stored values -> human label / pynput mouse.Button name
-MOUSE_HOTKEYS = {
-    "mouse_x1": "x1",
-    "mouse_x2": "x2",
-    "mouse_middle": "middle",
-}
-MOUSE_HOTKEY_ALIASES = {
-    "mouse_x1": "mouse_x1",
-    "mouse:x1": "mouse_x1",
-    "x1": "mouse_x1",
-    "button4": "mouse_x1",
-    "souris_x1": "mouse_x1",
-    "mouse_x2": "mouse_x2",
-    "mouse:x2": "mouse_x2",
-    "x2": "mouse_x2",
-    "button5": "mouse_x2",
-    "souris_x2": "mouse_x2",
-    "mouse_middle": "mouse_middle",
-    "mouse:middle": "mouse_middle",
-    "middle": "mouse_middle",
-    "souris_molette": "mouse_middle",
-    "mouse_mid": "mouse_middle",
-}
-MOUSE_HOTKEY_LABELS = {
-    "mouse_x1": "Souris X1 (latéral)",
-    "mouse_x2": "Souris X2 (latéral)",
-    "mouse_middle": "Souris molette (clic)",
-}
-
-
-def normalize_hotkey(raw):
-    """Return a canonical hotkey string (keyboard combo or mouse_*)."""
-    raw = str(raw or "").strip()
-    if not raw:
-        return DEFAULT_CONFIG["hotkey"]
-    alias = MOUSE_HOTKEY_ALIASES.get(raw.lower().replace(" ", ""))
-    if alias:
-        return alias
-    parts = [p.strip() for p in raw.replace(" ", "").split("+") if p.strip()]
-    if not parts:
-        return DEFAULT_CONFIG["hotkey"]
-    pretty = []
-    for part in parts:
-        low = part.strip("<>").lower()
-        if low in ("control", "ctrl"):
-            pretty.append("ctrl")
-        elif low in ("win", "cmd"):
-            pretty.append("cmd")
-        elif low in HOTKEY_MODIFIERS:
-            pretty.append(low)
-        elif low.startswith("f") and low[1:].isdigit():
-            pretty.append(low.upper())
-        else:
-            pretty.append(low)
-    return "+".join(pretty) if pretty else DEFAULT_CONFIG["hotkey"]
-
-
-def is_mouse_hotkey(raw):
-    return normalize_hotkey(raw) in MOUSE_HOTKEYS
-
-
-def display_hotkey(raw):
-    """Human-readable label for settings UI."""
-    canon = normalize_hotkey(raw)
-    if canon in MOUSE_HOTKEY_LABELS:
-        return MOUSE_HOTKEY_LABELS[canon]
-    return canon
-
-
-def format_hotkey(raw):
-    """Convert a user hotkey like 'F8' or 'ctrl+shift+f8' to pynput form.
-
-    Mouse hotkeys are not converted here — use is_mouse_hotkey() / MOUSE_HOTKEYS.
-    """
-    canon = normalize_hotkey(raw)
-    if canon in MOUSE_HOTKEYS:
-        return canon
-    parts = [p.strip().lower() for p in canon.replace(" ", "").split("+") if p.strip()]
-    if not parts:
-        parts = ["f8"]
-    formatted = []
-    for part in parts:
-        part = part.strip("<>")
-        if part in HOTKEY_MODIFIERS:
-            formatted.append(HOTKEY_MODIFIERS[part])
-        elif len(part) == 1:
-            formatted.append(part)
-        else:
-            formatted.append(f"<{part}>")
-    return "+".join(formatted)
 
 
 def sanitize_config(data):
-    """Keep only known keys and coerce values to safe defaults."""
-    if not isinstance(data, dict):
-        return DEFAULT_CONFIG.copy()
-
-    cfg = DEFAULT_CONFIG.copy()
-    for key in ALLOWED_KEYS:
-        if key not in data:
-            continue
-        cfg[key] = data[key]
-
-    hotkey = normalize_hotkey(cfg.get("hotkey"))
-    cfg["hotkey"] = hotkey[:32] if hotkey else DEFAULT_CONFIG["hotkey"]
-
-    language = str(cfg.get("language") or "fr").lower()
-    cfg["language"] = language if language in VALID_LANGUAGES else "fr"
-
-    model_size = str(cfg.get("model_size") or "base").lower()
-    cfg["model_size"] = model_size if model_size in VALID_MODELS else "base"
-
-    device = str(cfg.get("device") or "auto").lower()
-    cfg["device"] = device if device in VALID_DEVICES else "auto"
-
-    compute_type = str(cfg.get("compute_type") or "int8").lower()
-    cfg["compute_type"] = compute_type if compute_type in VALID_COMPUTE else "int8"
-
-    profile = str(cfg.get("transcription_profile") or "fast").lower()
-    cfg["transcription_profile"] = profile if profile in VALID_PROFILES else "fast"
-
-    try:
-        max_seconds = int(cfg.get("max_record_seconds"))
-    except (TypeError, ValueError):
-        max_seconds = DEFAULT_CONFIG["max_record_seconds"]
-    cfg["max_record_seconds"] = max(0, min(max_seconds, MAX_RECORD_SECONDS_CAP))
-
-    cfg["pre_buffer_ms"] = clamp_pre_buffer_ms(cfg.get("pre_buffer_ms"))
-
-    check_updates = cfg.get("check_updates")
-    if isinstance(check_updates, bool):
-        cfg["check_updates"] = check_updates
-    elif isinstance(check_updates, str):
-        cfg["check_updates"] = check_updates.strip().lower() in ("1", "true", "yes", "on")
-    else:
-        cfg["check_updates"] = bool(DEFAULT_CONFIG["check_updates"])
-
-    log_timings = cfg.get("log_pipeline_timings")
-    if isinstance(log_timings, bool):
-        cfg["log_pipeline_timings"] = log_timings
-    elif isinstance(log_timings, str):
-        cfg["log_pipeline_timings"] = log_timings.strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-    else:
-        cfg["log_pipeline_timings"] = bool(DEFAULT_CONFIG["log_pipeline_timings"])
-
-    beeps = cfg.get("beeps")
-    if isinstance(beeps, bool):
-        cfg["beeps"] = beeps
-    elif isinstance(beeps, str):
-        cfg["beeps"] = beeps.strip().lower() in ("1", "true", "yes", "on")
-    else:
-        cfg["beeps"] = bool(DEFAULT_CONFIG["beeps"])
-
-    models_dir = cfg.get("models_dir")
-    if models_dir is None:
-        cfg["models_dir"] = ""
-    else:
-        cfg["models_dir"] = str(models_dir).strip()[:512]
-    return cfg
+    return _sanitize_config_impl(data, normalize_hotkey=normalize_hotkey)
 
 
 def detect_nvidia_gpu():
@@ -523,12 +347,34 @@ class AudioRecorder:
         self._lock = threading.Lock()
         self._temp_files = []
         self._pre_buffer_ms = 0
+        self._input_device_name = ""
+        self._input_device_index = None
         self._ring = CircularByteBuffer(0)
         self._monitor_running = False
         self._monitor_thread = None
         self._legacy_capture = True
         self._last_rms = 0.0
         self._vu_level_smooth = 0.0
+
+    def set_input_device(self, device_name):
+        """Select input device by display name (empty = Windows default)."""
+        self._input_device_name = str(device_name or "").strip()
+        resolved = resolve_input_device_index(self.audio, self._input_device_name)
+        if resolved.requested_name and not resolved.matched_by_name:
+            log(
+                f"Micro introuvable « {resolved.requested_name} » : utilisation du périphérique par défaut."
+            )
+        self._input_device_index = resolved.index
+
+    def restart_input_monitor(self):
+        """Re-open the mic after a device change."""
+        was_recording = self.is_recording
+        if was_recording:
+            return
+        had_monitor = self._monitor_running
+        self._stop_monitor_internal(close_stream=True)
+        if had_monitor or self._pre_buffer_ms > 0:
+            self.start_background_capture()
 
     def set_pre_buffer_ms(self, pre_buffer_ms):
         """Configure pre-roll duration; call before ``start_background_capture``."""
@@ -584,13 +430,16 @@ class AudioRecorder:
         if self.stream:
             return True
         try:
-            self.stream = self.audio.open(
-                format=self.format,
-                channels=self.channels,
-                rate=self.rate,
-                input=True,
-                frames_per_buffer=self.chunk,
-            )
+            kwargs = {
+                "format": self.format,
+                "channels": self.channels,
+                "rate": self.rate,
+                "input": True,
+                "frames_per_buffer": self.chunk,
+            }
+            if self._input_device_index is not None:
+                kwargs["input_device_index"] = self._input_device_index
+            self.stream = self.audio.open(**kwargs)
             return True
         except Exception as e:
             log_error(f"Error opening microphone stream: {e}")
@@ -866,7 +715,9 @@ class CyberScribeApp:
         self.config = ConfigManager()
         self.recorder = AudioRecorder()
         self.recorder.set_pre_buffer_ms(self.config.get("pre_buffer_ms"))
+        self.recorder.set_input_device(self.config.get("input_device"))
         self.recorder.start_background_capture()
+        self.first_run_window = None
         self.transcriber = Transcriber(self.config)
         self.is_recording = False
         self.auto_stop_timer = None
@@ -909,6 +760,73 @@ class CyberScribeApp:
         self.setup_hotkey()
         if check_for_update and self.config.get("check_updates"):
             threading.Thread(target=self._background_update_check, daemon=True).start()
+
+    app_dir = APP_DIR
+
+    @property
+    def version(self):
+        return __version__
+
+    @property
+    def has_nvidia(self):
+        return self._has_nvidia
+
+    @property
+    def hotkey_capture(self):
+        return self._hotkey_capture
+
+    @property
+    def hotkey_capture_ui(self):
+        return self._hotkey_capture_ui
+
+    @hotkey_capture_ui.setter
+    def hotkey_capture_ui(self, value):
+        self._hotkey_capture_ui = value
+
+    def stop_hotkey_capture(self, *, join=True):
+        self._stop_hotkey_capture(join=join)
+
+    def tray_status_short(self):
+        return self._tray_status_text(None)
+
+    def manual_update_check(self):
+        self._manual_update_check()
+
+    def kickoff_local_exe_hash(self, sha_var, sha_hint):
+        self._kickoff_local_exe_hash(sha_var, sha_hint)
+
+    def copy_settings_sha(self, sha_var, sha_hint):
+        value = sha_var.get().strip().lower()
+        if not is_sha256_hex(value):
+            if not is_frozen_build():
+                sha_hint.set(
+                    "Uniquement pour l'application packagée (CyberScribe.exe). "
+                    "Ce mode script n'a pas d'exécutable figé."
+                )
+            else:
+                sha_hint.set("Empreinte pas encore disponible.")
+            return
+        if self._copy_to_clipboard(value):
+            sha_hint.set("Copié dans le presse-papiers.")
+        else:
+            sha_hint.set("Copie impossible.")
+
+    def log_message(self, msg):
+        log(msg)
+
+    def sync_tray_menu(self):
+        self._sync_tray_menu()
+
+    def apply_input_device(self, device_name: str):
+        old = self.config.get("input_device") or ""
+        name = str(device_name or "").strip()
+        self.config.set("input_device", name)
+        self.recorder.set_input_device(name)
+        if name != old:
+            self.recorder.restart_input_monitor()
+        else:
+            self.recorder.start_background_capture()
+        self._sync_tray_menu()
 
     def _stop_listener(self, listener, timeout=1.0):
         if not listener:
@@ -1577,6 +1495,20 @@ class CyberScribeApp:
 
         return _handler
 
+    def _set_tray_input_device(self, device_name):
+        def _handler(icon, item):
+            self.apply_input_device(device_name)
+
+            def _menu():
+                self._sync_tray_menu()
+
+            try:
+                self.root.after(0, _menu)
+            except Exception:
+                self._sync_tray_menu()
+
+        return _handler
+
     def _set_tray_pre_buffer(self, ms):
         def _handler(icon, item):
             self.config.set("pre_buffer_ms", ms)
@@ -1653,6 +1585,25 @@ class CyberScribeApp:
             )
         pre_buffer_menu = pystray.Menu(*pre_buffer_items)
 
+        from audio_devices import device_names_for_tray, enumerate_input_devices
+
+        devices = enumerate_input_devices(self.recorder.audio)
+        tray_devices = device_names_for_tray(devices)
+        def _input_checked(stored_name):
+            return lambda item: (str(self.config.get("input_device") or "")) == stored_name
+
+        mic_items = []
+        for label, stored in tray_devices:
+            mic_items.append(
+                pystray.MenuItem(
+                    label,
+                    self._set_tray_input_device(stored),
+                    radio=True,
+                    checked=_input_checked(stored),
+                )
+            )
+        mic_menu = pystray.Menu(*mic_items) if mic_items else None
+
         menu_items = [
             pystray.MenuItem(self._tray_status_text, None, enabled=False),
             pystray.MenuItem(
@@ -1661,16 +1612,26 @@ class CyberScribeApp:
                 default=True,
             ),
             pystray.MenuItem("Profil", profile_menu),
+        ]
+        if mic_menu is not None:
+            menu_items.append(pystray.MenuItem("Micro", mic_menu))
+        menu_items.extend(
+            [
             pystray.MenuItem("Pré-buffer", pre_buffer_menu),
             pystray.MenuItem(
                 "Bips de début et fin",
                 self._toggle_tray_beeps,
                 checked=lambda item: bool(self.config.get("beeps")),
             ),
+            ]
+        )
+        menu_items.extend(
+            [
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Configuration…", self.request_settings),
             pystray.MenuItem("Ouvrir le dossier des journaux", self.open_logs_folder),
-        ]
+            ]
+        )
         if check_for_update:
             menu_items.append(
                 pystray.MenuItem("Vérifier les mises à jour", self.request_check_updates)
@@ -1778,6 +1739,8 @@ class CyberScribeApp:
 
         if text:
             log(f"Transcription finished ({len(text)} chars)")
+            if not self.config.get("first_run_done"):
+                self._first_run_sample_text = text
             paste_s = self.paste_text(text)
             if self.config.get("log_pipeline_timings"):
                 from dictation_pipeline import PipelineTimings, format_timing_log
@@ -2379,571 +2342,10 @@ class CyberScribeApp:
             pass
 
     def open_settings_window(self):
-        if self.settings_window and self.settings_window.winfo_exists():
-            try:
-                self.settings_window.lift()
-                self.settings_window.focus_force()
-                return
-            except Exception:
-                pass
+        from settings_ui import open_settings_window as _open_settings
 
         try:
-            self.settings_window = tk.Toplevel(self.root)
-            root = self.settings_window
-            root.title(f"CyberScribe Config v{__version__}")
-
-            C_BG = "#0f172a"
-            C_ACCENT = "#06b6d4"
-            C_INPUT_BG = "#1e293b"
-            C_INPUT_FG = "#38bdf8"
-            C_WARN = "#f43f5e"
-
-            root.configure(bg=C_ACCENT)
-
-            width = 480
-            ws, hs = root.winfo_screenwidth(), root.winfo_screenheight()
-            height = min(720, max(480, hs - 100))
-            x = (ws // 2) - (width // 2)
-            y = max(20, (hs // 2) - (height // 2))
-            root.geometry(f"{width}x{height}+{x}+{y}")
-            root.minsize(420, 420)
-
-            root.attributes("-topmost", True)
-            root.after(100, lambda: root.attributes("-topmost", False))
-
-            outer = tk.Frame(root, bg=C_BG)
-            outer.pack(fill="both", expand=True, padx=2, pady=2)
-
-            canvas = tk.Canvas(outer, bg=C_BG, highlightthickness=0)
-            scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-            main_frame = tk.Frame(canvas, bg=C_BG)
-
-            main_frame.bind(
-                "<Configure>",
-                lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-            )
-            canvas_window = canvas.create_window((0, 0), window=main_frame, anchor="nw")
-            canvas.configure(yscrollcommand=scrollbar.set)
-
-            def _sync_width(event):
-                canvas.itemconfigure(canvas_window, width=event.width)
-
-            canvas.bind("<Configure>", _sync_width)
-
-            def _on_mousewheel(event):
-                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-                return "break"
-
-            def _bind_wheel(widget):
-                widget.bind("<MouseWheel>", _on_mousewheel)
-                for child in widget.winfo_children():
-                    _bind_wheel(child)
-
-            canvas.bind("<MouseWheel>", _on_mousewheel)
-
-            canvas.pack(side="left", fill="both", expand=True)
-            scrollbar.pack(side="right", fill="y")
-
-            style = ttk.Style(root)
-            style.theme_use("clam")
-            style.configure(
-                "TCombobox",
-                fieldbackground=C_INPUT_BG,
-                background=C_INPUT_BG,
-                foreground=C_INPUT_FG,
-                arrowcolor=C_ACCENT,
-            )
-
-            def create_label(text, parent=main_frame):
-                return tk.Label(
-                    parent, text=text, bg=C_BG, fg=C_ACCENT, font=("Segoe UI", 10, "bold")
-                )
-
-            def create_help_text(text, parent=main_frame):
-                return tk.Label(
-                    parent,
-                    text=text,
-                    bg=C_BG,
-                    fg="#94a3b8",
-                    font=("Consolas", 8),
-                    justify="left",
-                    wraplength=400,
-                )
-
-            def create_entry(var, parent=main_frame):
-                return tk.Entry(
-                    parent,
-                    textvariable=var,
-                    bg=C_INPUT_BG,
-                    fg=C_INPUT_FG,
-                    insertbackground=C_ACCENT,
-                    font=("Consolas", 11),
-                    relief="flat",
-                    bd=5,
-                )
-
-            tk.Label(
-                main_frame,
-                text="/// SYSTEM CONFIGURATION",
-                bg=C_BG,
-                fg=C_ACCENT,
-                font=("Consolas", 12, "bold"),
-            ).pack(pady=(16, 6))
-            tk.Label(
-                main_frame,
-                text=f"CyberScribe v{__version__}",
-                bg=C_BG,
-                fg="#94a3b8",
-                font=("Consolas", 8),
-            ).pack()
-            tk.Frame(main_frame, bg=C_ACCENT, height=2).pack(fill="x", padx=20, pady=(8, 12))
-
-            create_label(">> ACTIVATION KEY").pack(pady=(8, 2))
-            create_help_text(
-                "Cliquez Capturer, puis appuyez sur une touche (F8, Ctrl+Shift+F8…) "
-                "ou un bouton souris (X1 / X2 / molette). Recliquez Capturer pour annuler. "
-                "Le raccourci affiché est celui qui lance l'enregistrement (pensez à Enregistrer)."
-            ).pack(pady=(0, 4))
-            hk_var = tk.StringVar(root, value=normalize_hotkey(self.config.get("hotkey")))
-            hk_display_var = tk.StringVar(root, value=display_hotkey(hk_var.get()))
-            hk_status_var = tk.StringVar(root, value="")
-
-            hk_row = tk.Frame(main_frame, bg=C_BG)
-            hk_row.pack(pady=0, fill="x", padx=20)
-
-            # Focus sink so Tk KeyPress events reach us during capture.
-            hk_display = tk.Label(
-                hk_row,
-                textvariable=hk_display_var,
-                bg=C_INPUT_BG,
-                fg=C_INPUT_FG,
-                font=("Consolas", 11),
-                relief="flat",
-                anchor="w",
-                padx=10,
-                pady=6,
-                takefocus=1,
-                highlightthickness=1,
-                highlightbackground=C_INPUT_BG,
-                highlightcolor=C_ACCENT,
-            )
-            hk_display.pack(side="left", fill="x", expand=True, padx=(0, 8))
-
-            capture_btn = tk.Button(
-                hk_row,
-                text="[ CAPTURER ]",
-                bg="#334155",
-                fg="white",
-                font=("Consolas", 9, "bold"),
-                relief="flat",
-                padx=10,
-                pady=4,
-            )
-            capture_btn.pack(side="right")
-
-            tk.Label(
-                main_frame,
-                textvariable=hk_status_var,
-                bg=C_BG,
-                fg="#94a3b8",
-                font=("Consolas", 8),
-                wraplength=400,
-                justify="left",
-            ).pack(pady=(4, 0), padx=20, anchor="w")
-
-            def _set_hotkey_value(value):
-                canon = normalize_hotkey(value)
-                hk_var.set(canon)
-                hk_display_var.set(display_hotkey(canon))
-
-            def _unbind_tk_capture():
-                try:
-                    root.unbind("<KeyPress>")
-                    hk_display.unbind("<KeyPress>")
-                except Exception:
-                    pass
-
-            def _capture_status(msg):
-                try:
-                    if root.winfo_exists():
-                        hk_status_var.set(msg or "")
-                except tk.TclError:
-                    pass
-
-            def _capture_done(value):
-                try:
-                    if not root.winfo_exists():
-                        return
-                    _unbind_tk_capture()
-                    capture_btn.config(state="normal", text="[ CAPTURER ]", bg="#334155")
-                    hk_display.config(highlightbackground=C_INPUT_BG)
-                    if value:
-                        _set_hotkey_value(value)
-                        hk_status_var.set(f"Raccourci détecté : {display_hotkey(value)}")
-                    elif not hk_status_var.get() or "écoute" in (hk_status_var.get() or "").lower():
-                        hk_status_var.set("Capture annulée.")
-                except tk.TclError:
-                    pass
-
-            self._hotkey_capture_ui = {
-                "on_status": _capture_status,
-                "on_result": _capture_done,
-            }
-
-            def _start_capture():
-                # Second click cancels an in-progress capture.
-                if self._hotkey_capture:
-                    self.cancel_hotkey_capture()
-                    return
-                capture_btn.config(text="[ ANNULER ]", bg=C_WARN)
-                hk_status_var.set("Préparation de la capture…")
-                hk_display.config(highlightbackground=C_ACCENT)
-                try:
-                    root.focus_force()
-                    hk_display.focus_set()
-                except Exception:
-                    pass
-                root.bind("<KeyPress>", self.handle_tk_capture_keypress)
-                hk_display.bind("<KeyPress>", self.handle_tk_capture_keypress)
-                ok = self.start_hotkey_capture()
-                if ok and self._hotkey_capture is not None:
-                    self._hotkey_capture["unbind_tk"] = _unbind_tk_capture
-                if not ok:
-                    _unbind_tk_capture()
-                    capture_btn.config(state="normal", text="[ CAPTURER ]", bg="#334155")
-                    hk_status_var.set("Capture impossible (pynput).")
-
-            capture_btn.config(command=_start_capture)
-
-            def _on_settings_close():
-                self._hotkey_capture_ui = None
-                self._stop_hotkey_capture(join=True)
-                self.setup_hotkey()
-                try:
-                    root.destroy()
-                except Exception:
-                    pass
-
-            root.protocol("WM_DELETE_WINDOW", _on_settings_close)
-
-            create_label(">> LANGUAGE MODULE").pack(pady=(12, 2))
-            create_help_text("Target language for vocal processing.").pack(pady=(0, 4))
-            lang_var = tk.StringVar(root, value=self.config.get("language") or "auto")
-            LANGUAGES = ["auto", "en", "fr", "de", "es", "it", "ja", "zh", "nl", "uk", "pt", "ru"]
-            ttk.Combobox(
-                main_frame, textvariable=lang_var, values=LANGUAGES, font=("Consolas", 10)
-            ).pack(pady=0)
-
-            create_label(">> NEURAL MODEL").pack(pady=(12, 2))
-            create_help_text("Model size: Tiny (Fast) <-> Large (Precise). Reloads on save.").pack(
-                pady=(0, 4)
-            )
-            model_var = tk.StringVar(root, value=self.config.get("model_size"))
-            ttk.Combobox(
-                main_frame,
-                textvariable=model_var,
-                values=["tiny", "base", "small", "medium", "large-v3"],
-                font=("Consolas", 10),
-            ).pack(pady=0)
-
-            create_label(">> PROCESSING UNIT").pack(pady=(12, 2))
-            create_help_text("Compute device: CPU (Universal) / CUDA (GPU)").pack(pady=(0, 4))
-            device_var = tk.StringVar(root, value=self.config.get("device"))
-            ttk.Combobox(
-                main_frame, textvariable=device_var, values=["auto", "cpu", "cuda"], font=("Consolas", 10)
-            ).pack(pady=0)
-
-            create_label(">> COMPUTE TYPE").pack(pady=(12, 2))
-            create_help_text("Precision: int8 (fast) / float16 (GPU) / float32 (quality)").pack(
-                pady=(0, 4)
-            )
-            compute_var = tk.StringVar(root, value=self.config.get("compute_type") or "int8")
-            ttk.Combobox(
-                main_frame,
-                textvariable=compute_var,
-                values=["int8", "int8_float16", "float16", "float32"],
-                font=("Consolas", 10),
-            ).pack(pady=0)
-
-            create_label(">> TRANSCRIPTION PROFILE").pack(pady=(12, 2))
-            create_help_text("fast = low latency, balanced = compromise, accurate = quality").pack(
-                pady=(0, 4)
-            )
-            profile_var = tk.StringVar(root, value=self.config.get("transcription_profile") or "fast")
-            ttk.Combobox(
-                main_frame,
-                textvariable=profile_var,
-                values=["fast", "balanced", "accurate"],
-                font=("Consolas", 10),
-            ).pack(pady=0)
-
-            create_label(">> MAX RECORD DURATION (SECONDS)").pack(pady=(12, 2))
-            create_help_text("Auto-stop safety. 0 disables limit. Recommended: 15-30s").pack(
-                pady=(0, 4)
-            )
-            max_record_var = tk.StringVar(root, value=str(self.config.get("max_record_seconds") or 25))
-            create_entry(max_record_var).pack(pady=0, ipadx=5, ipady=3)
-
-            create_label(">> SOFTWARE UPDATES").pack(pady=(12, 2))
-            create_help_text(
-                "Recherche facultative d'une version plus récente sur GitHub Releases. "
-                "Aucun texte dicté n'est envoyé. Quand la release publie CyberScribe.exe.sha256, "
-                "le fichier téléchargé est comparé à cette somme avant l'installation."
-            ).pack(pady=(0, 4))
-            check_updates_var = tk.BooleanVar(
-                root, value=bool(self.config.get("check_updates"))
-            )
-
-            def _toggle_check_updates():
-                self.config.set("check_updates", bool(check_updates_var.get()))
-
-            tk.Checkbutton(
-                main_frame,
-                text="Vérifier automatiquement au démarrage",
-                variable=check_updates_var,
-                command=_toggle_check_updates,
-                bg=C_BG,
-                fg="#e2e8f0",
-                selectcolor=C_INPUT_BG,
-                activebackground=C_BG,
-                activeforeground="#e2e8f0",
-                font=("Consolas", 9),
-            ).pack(anchor="w", padx=30)
-            create_help_text(
-                "Au démarrage, une notification indique qu'une mise à jour est disponible. "
-                "Rien n'est installé sans confirmation."
-            ).pack(anchor="w", padx=30, pady=(2, 4))
-
-            def _check_updates_ui():
-                self._manual_update_check()
-
-            tk.Button(
-                main_frame,
-                text="[ VÉRIFIER LES MISES À JOUR ]",
-                command=_check_updates_ui,
-                bg="#334155",
-                fg="white",
-                font=("Consolas", 9, "bold"),
-                relief="flat",
-            ).pack(pady=(8, 4), ipadx=8)
-
-            tk.Label(
-                main_frame,
-                text="SHA256 de cet exécutable",
-                bg=C_BG,
-                fg="#e2e8f0",
-                font=("Consolas", 9),
-            ).pack(anchor="w", padx=30, pady=(8, 2))
-            create_help_text(
-                "Empreinte de l'exécutable en cours d'exécution, calculée sur cet ordinateur."
-            ).pack(anchor="w", padx=30, pady=(0, 4))
-
-            sha_var = tk.StringVar(root, value="")
-            sha_hint = tk.StringVar(root, value="")
-            sha_row = tk.Frame(main_frame, bg=C_BG)
-            sha_row.pack(fill="x", padx=30, pady=(0, 2))
-            sha_entry = tk.Entry(
-                sha_row,
-                textvariable=sha_var,
-                bg=C_INPUT_BG,
-                fg=C_INPUT_FG,
-                readonlybackground=C_INPUT_BG,
-                disabledbackground=C_INPUT_BG,
-                disabledforeground="#64748b",
-                font=("Consolas", 8),
-                relief="flat",
-                bd=4,
-            )
-            sha_entry.configure(state="readonly")
-            sha_entry.pack(side="left", fill="x", expand=True, ipady=2)
-
-            def _copy_local_sha():
-                value = sha_var.get().strip().lower()
-                if not is_sha256_hex(value):
-                    if not is_frozen_build():
-                        sha_hint.set(
-                            "Uniquement pour l'application packagée (CyberScribe.exe). "
-                            "Ce mode script n'a pas d'exécutable figé."
-                        )
-                    else:
-                        sha_hint.set("Empreinte pas encore disponible.")
-                    return
-                if self._copy_to_clipboard(value):
-                    sha_hint.set("Copié dans le presse-papiers.")
-                else:
-                    sha_hint.set("Copie impossible.")
-
-            tk.Button(
-                sha_row,
-                text="Copier",
-                command=_copy_local_sha,
-                bg="#334155",
-                fg="white",
-                font=("Consolas", 8, "bold"),
-                relief="flat",
-            ).pack(side="left", padx=(6, 0))
-            tk.Label(
-                main_frame,
-                textvariable=sha_hint,
-                bg=C_BG,
-                fg="#94a3b8",
-                font=("Consolas", 8),
-                justify="left",
-                wraplength=400,
-            ).pack(anchor="w", padx=30, pady=(2, 4))
-            self._kickoff_local_exe_hash(sha_var, sha_hint)
-
-            create_label(">> MODEL STORAGE").pack(pady=(12, 2))
-            create_help_text(
-                "Dossier des modèles Whisper. Vide = dossier « models » à côté de l'application."
-            ).pack(pady=(0, 4))
-            path_var = tk.StringVar(root, value=self.config.get_models_dir())
-
-            models_row = tk.Frame(main_frame, bg=C_BG)
-            models_row.pack(fill="x", padx=30, pady=(0, 4))
-            models_entry = create_entry(path_var, parent=models_row)
-            models_entry.pack(side="left", fill="x", expand=True, ipadx=3, ipady=2)
-
-            def _browse_models():
-                initial = path_var.get().strip() or self.config.get_models_dir()
-                chosen = filedialog.askdirectory(
-                    parent=root,
-                    title="Dossier des modèles Whisper",
-                    initialdir=initial if os.path.isdir(initial) else APP_DIR,
-                )
-                if chosen:
-                    path_var.set(os.path.normpath(chosen))
-
-            tk.Button(
-                models_row,
-                text="…",
-                command=_browse_models,
-                bg=C_INPUT_BG,
-                fg=C_ACCENT,
-                font=("Consolas", 10, "bold"),
-                relief="flat",
-                width=3,
-            ).pack(side="left", padx=(6, 0))
-
-            def test_rec():
-                self.queue.put("toggle_recording")
-
-            tk.Button(
-                main_frame,
-                text="[ INITIATE SELF-TEST ]",
-                command=test_rec,
-                bg=C_WARN,
-                fg="white",
-                font=("Consolas", 9, "bold"),
-                relief="flat",
-            ).pack(pady=(24, 5), ipadx=10)
-
-            def save():
-                old_model = self.config.get("model_size")
-                old_device = self.config.get("device")
-                old_compute = self.config.get("compute_type")
-                old_models_resolved = self.config.get_models_dir()
-
-                try:
-                    max_record = int(max_record_var.get())
-                except Exception:
-                    max_record = DEFAULT_CONFIG["max_record_seconds"]
-
-                new_models_input = path_var.get().strip()
-                new_models_resolved = resolve_models_dir(
-                    APP_DIR, new_models_input if new_models_input else None
-                )
-                models_cfg = canonical_models_dir_config(new_models_resolved, APP_DIR)
-
-                if (
-                    os.path.normcase(new_models_resolved) != os.path.normcase(old_models_resolved)
-                    and directory_has_model_files(old_models_resolved)
-                ):
-                    choice = messagebox.askyesnocancel(
-                        "CyberScribe — modèles",
-                        "Le dossier des modèles change.\n\n"
-                        "Déplacer les fichiers existants vers le nouveau dossier ?\n\n"
-                        "Oui = déplacer\nNon = copier\nAnnuler = garder l'ancien dossier",
-                        parent=root,
-                    )
-                    if choice is None:
-                        return
-                    ok, migrate_msg = migrate_models_directory(
-                        old_models_resolved,
-                        new_models_resolved,
-                        move=bool(choice),
-                    )
-                    if not ok:
-                        messagebox.showerror(
-                            "CyberScribe",
-                            f"Migration des modèles impossible :\n{migrate_msg}",
-                            parent=root,
-                        )
-                        return
-                    log(migrate_msg)
-                else:
-                    try:
-                        ensure_models_dir(new_models_resolved)
-                    except OSError as e:
-                        messagebox.showerror(
-                            "CyberScribe",
-                            f"Impossible de créer le dossier des modèles :\n{e}",
-                            parent=root,
-                        )
-                        return
-
-                self._stop_hotkey_capture(join=True)
-                self._hotkey_capture_ui = None
-                self.config.update({
-                    "hotkey": normalize_hotkey(hk_var.get()),
-                    "language": lang_var.get(),
-                    "model_size": model_var.get(),
-                    "device": device_var.get(),
-                    "compute_type": compute_var.get(),
-                    "transcription_profile": profile_var.get() or "fast",
-                    "max_record_seconds": max_record,
-                    "models_dir": models_cfg,
-                })
-                if not self.setup_hotkey():
-                    messagebox.showwarning(
-                        "CyberScribe",
-                        "Raccourci invalide. Retour à F8.",
-                        parent=root,
-                    )
-                    _set_hotkey_value("F8")
-
-                models_changed = (
-                    os.path.normcase(self.config.get_models_dir())
-                    != os.path.normcase(old_models_resolved)
-                )
-                model_changed = (
-                    self.config.get("model_size") != old_model
-                    or self.config.get("device") != old_device
-                    or self.config.get("compute_type") != old_compute
-                    or models_changed
-                )
-                if model_changed:
-                    self.transcriber.reload()
-                    self.update_tray_icon(state="loading")
-                    messagebox.showinfo(
-                        "CyberScribe",
-                        "Configuration enregistrée.\nLe modèle Whisper se recharge en arrière-plan.",
-                        parent=root,
-                    )
-                else:
-                    messagebox.showinfo("CyberScribe", "SYSTEM UPDATED.", parent=root)
-                root.destroy()
-
-            tk.Button(
-                main_frame,
-                text=">> SAVE CONFIGURATION <<",
-                command=save,
-                bg=C_ACCENT,
-                fg="white",
-                font=("Consolas", 11, "bold"),
-                relief="flat",
-            ).pack(pady=(8, 20), ipadx=20, ipady=5)
-            _bind_wheel(main_frame)
+            _open_settings(self)
         except Exception as e:
             log_error(f"GUI Error: {e}")
 
@@ -2994,6 +2396,10 @@ class CyberScribeApp:
     def run(self):
         log(f"=== Application Started v{__version__} ===")
         self.show_splash()
+        self._first_run_sample_text = ""
+        from first_run_ui import maybe_show_first_run
+
+        self.root.after(500, lambda: maybe_show_first_run(self))
         tray_thread = threading.Thread(target=self.run_tray, daemon=True)
         tray_thread.start()
         self.update_tray_icon(state="loading")
