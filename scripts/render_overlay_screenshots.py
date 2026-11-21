@@ -86,7 +86,7 @@ def main():
         root.update()
         if state in (OverlayState.LISTENING, OverlayState.ENDING_SOON):
             overlay._vu_history = [0.2 + 0.1 * (i % 4) for i in range(48)]
-            overlay._draw_vu_meter()
+            overlay._draw_vu_meter(0.88 if state == OverlayState.ENDING_SOON else 0.28)
             root.update()
         path = os.path.join(out_dir, f"{name}.png")
         if overlay.window:

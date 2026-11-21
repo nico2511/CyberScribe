@@ -259,9 +259,8 @@ class StatusOverlay:
             font=("Consolas", 10),
             bg=BG_DARK,
             anchor="e",
-            padx=(6, 0),
         )
-        self._timer.pack(side="right")
+        self._timer.pack(side="right", padx=(6, 0))
 
         self._progress = tk.Canvas(self._body, height=2, bg=BG_DARK, highlightthickness=0)
 
@@ -340,7 +339,7 @@ class StatusOverlay:
             if self._timer:
                 self._timer.config(text=timer_text)
             if state == OverlayState.ENDING_SOON and self._progress:
-                self._progress.pack(fill="x", pady=(0, 0))
+                self._progress.pack(fill="x")
             elif self._progress:
                 self._progress.pack_forget()
             self._start_vu_tick()
@@ -416,7 +415,7 @@ class StatusOverlay:
             self._state = tick.state
             self._apply_palette(tick.state)
             if tick.state == OverlayState.ENDING_SOON and self._progress:
-                self._progress.pack(fill="x", pady=(0, 0))
+                self._progress.pack(fill="x")
             elif self._progress:
                 self._progress.pack_forget()
 
