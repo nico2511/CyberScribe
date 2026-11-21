@@ -68,7 +68,7 @@ from tkinter import filedialog, ttk, messagebox
 
 from audio_wav import PROFILE_PRESETS, load_wav_mono_f32, normalize_pcm16_mono_bytes
 
-__version__ = "1.5.6"
+__version__ = "1.5.7"
 APP_MUTEX_NAME = "Global\\CyberScribeSingleInstance"
 ERROR_ALREADY_EXISTS = 183
 
