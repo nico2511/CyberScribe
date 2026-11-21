@@ -25,6 +25,8 @@ BAR_COUNT = 48
 VU_REFRESH_MS = 40
 ENDING_SOON_SECONDS = 3
 PASTED_HIDE_MS = 1500
+TRANSITION_MS = 200
+TRANSITION_STEP_MS = 40
 
 PROFILE_LABELS = {
     "fast": "Rapide",
@@ -49,6 +51,38 @@ class OverlayPalette:
     pill_bg: str
     pill_fg: str
     detail_fg: str
+
+
+def _hex_to_rgb(color: str) -> Tuple[int, int, int]:
+    color = (color or "#000000").strip()
+    if color.startswith("#"):
+        color = color[1:]
+    if len(color) != 6:
+        return (0, 0, 0)
+    return tuple(int(color[i : i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+
+
+def _rgb_to_hex(rgb: Tuple[int, int, int]) -> str:
+    return "#%02x%02x%02x" % tuple(max(0, min(255, int(v))) for v in rgb)
+
+
+def lerp_hex_color(color_a: str, color_b: str, t: float) -> str:
+    t = max(0.0, min(1.0, float(t)))
+    a = _hex_to_rgb(color_a)
+    b = _hex_to_rgb(color_b)
+    mixed = tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+    return _rgb_to_hex(mixed)
+
+
+def interpolate_palette(
+    src: OverlayPalette, dst: OverlayPalette, t: float
+) -> OverlayPalette:
+    return OverlayPalette(
+        border=lerp_hex_color(src.border, dst.border, t),
+        pill_bg=lerp_hex_color(src.pill_bg, dst.pill_bg, t),
+        pill_fg=lerp_hex_color(src.pill_fg, dst.pill_fg, t),
+        detail_fg=lerp_hex_color(src.detail_fg, dst.detail_fg, t),
+    )
 
 
 STATE_PALETTE = {
@@ -227,6 +261,9 @@ class StatusOverlay:
         self._level_provider = None
         self._timer_provider = None
         self._lock = threading.Lock()
+        self._applied_palette: Optional[OverlayPalette] = None
+        self._transition_after_id: Optional[str] = None
+        self._pending_pill_text: Optional[str] = None
 
     def set_level_provider(self, provider):
         self._level_provider = provider
@@ -288,6 +325,7 @@ class StatusOverlay:
         )
 
     def _cancel_timers(self):
+        self._cancel_palette_transition()
         for attr in ("_hide_after_id", "_tick_after_id"):
             aid = getattr(self, attr)
             if aid and self.window:
@@ -297,19 +335,60 @@ class StatusOverlay:
                     pass
             setattr(self, attr, None)
 
-    def _apply_palette(self, state: OverlayState):
-        pal = STATE_PALETTE.get(state)
-        if not pal or not self.window:
+    def _apply_palette_direct(self, pal: OverlayPalette, *, pill_text: Optional[str] = None):
+        if not self.window:
             return
         self.window.config(bg=pal.border)
         if self._inner:
             self._inner.config(bg=BG_DARK)
         if self._pill:
             self._pill.config(bg=pal.pill_bg, fg=pal.pill_fg)
+            if pill_text is not None:
+                self._pill.config(text=pill_text)
         if self._detail:
             self._detail.config(fg=pal.detail_fg, bg=BG_DARK)
         if self._timer:
             self._timer.config(fg=pal.detail_fg, bg=BG_DARK)
+        self._applied_palette = pal
+
+    def _cancel_palette_transition(self):
+        if self._transition_after_id and self.window:
+            try:
+                self.window.after_cancel(self._transition_after_id)
+            except Exception:
+                pass
+        self._transition_after_id = None
+
+    def _apply_palette(self, state: OverlayState, *, pill_text: Optional[str] = None):
+        pal = STATE_PALETTE.get(state)
+        if not pal or not self.window:
+            return
+        start = self._applied_palette or pal
+        if start.border == pal.border and start.pill_bg == pal.pill_bg:
+            self._apply_palette_direct(pal, pill_text=pill_text)
+            return
+
+        steps = max(1, TRANSITION_MS // TRANSITION_STEP_MS)
+        self._cancel_palette_transition()
+        self._pending_pill_text = pill_text
+        hold_text = pill_text
+        if self._pill and hold_text is not None:
+            self._pill.config(fg=lerp_hex_color(start.pill_fg, BG_DARK, 0.35))
+
+        def _step(i=0):
+            if not self.window:
+                return
+            t = (i + 1) / steps
+            mid = interpolate_palette(start, pal, t)
+            pt = hold_text if t >= 0.55 else None
+            self._apply_palette_direct(mid, pill_text=pt)
+            if i + 1 >= steps:
+                self._apply_palette_direct(pal, pill_text=hold_text)
+                self._transition_after_id = None
+                return
+            self._transition_after_id = self.window.after(TRANSITION_STEP_MS, lambda: _step(i + 1))
+
+        _step(0)
 
     def _show_recording_layout(self):
         if self._detail:
@@ -342,11 +421,8 @@ class StatusOverlay:
             return
 
         self._ensure_window()
-        self._apply_palette(state)
         self._pre_buffer_bars = pre_buffer_bar_count(pre_buffer_ms)
-
-        if self._pill:
-            self._pill.config(text=pill_text)
+        self._apply_palette(state, pill_text=pill_text)
         if self.window:
             self.window.update_idletasks()
 
@@ -376,6 +452,7 @@ class StatusOverlay:
         self._stop_vu_tick()
         self._state = OverlayState.HIDDEN
         self._vu_history.clear()
+        self._applied_palette = None
         if self.window:
             try:
                 self.window.destroy()
@@ -431,7 +508,7 @@ class StatusOverlay:
         tick = recording_display_tick(elapsed_s, max_s)
         if tick.state != self._state:
             self._state = tick.state
-            self._apply_palette(tick.state)
+            self._apply_palette(tick.state, pill_text=tick.pill_text)
             if tick.state == OverlayState.ENDING_SOON and self._progress:
                 self._progress.pack(fill="x")
             elif self._progress:
