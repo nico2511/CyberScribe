@@ -6,6 +6,7 @@
     "compute_type": "int8",
     "transcription_profile": "fast",
     "max_record_seconds": 25,
+    "pre_buffer_ms": 1000,
     "check_updates": true,
     "models_dir": "%LOCALAPPDATA%\\CyberScribe\\models",
     "log_pipeline_timings": false

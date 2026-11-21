@@ -10,7 +10,9 @@ import hashlib
 import os
 import re
 import sys
+import tempfile
 import unittest
+import wave
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -56,6 +58,49 @@ class DictationReferenceTest(unittest.TestCase):
         )
         self.assertEqual(result.text.strip(), "")
         self.assertEqual(result.segment_count, 0)
+
+    def _concat_wavs(self, paths: list[str]) -> str:
+        fd, out = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        frames = b""
+        params = None
+        for path in paths:
+            with wave.open(path, "rb") as wf:
+                if params is None:
+                    params = (
+                        wf.getnchannels(),
+                        wf.getsampwidth(),
+                        wf.getframerate(),
+                    )
+                else:
+                    self.assertEqual(
+                        (wf.getnchannels(), wf.getsampwidth(), wf.getframerate()),
+                        params,
+                    )
+                frames += wf.readframes(wf.getnframes())
+        with wave.open(out, "wb") as wf:
+            wf.setnchannels(params[0])
+            wf.setsampwidth(params[1])
+            wf.setframerate(params[2])
+            wf.writeframes(frames)
+        return out
+
+    def test_pre_buffer_silence_then_speech_no_clipping(self):
+        """Simulate 1 s pre-roll silence + immediate speech (VAD should ignore silence)."""
+        silence = reference_wav("silence_only.wav")
+        speech = reference_wav("speech_immediate_start.wav")
+        path = self._concat_wavs([silence, speech])
+        try:
+            result = transcribe_with_model(
+                self._model, path, profile="fast", language="en"
+            )
+            self.assertGreater(result.segment_count, 0)
+            self.assertIsNotNone(result.first_segment_start_s)
+            assert result.first_segment_start_s is not None
+            self.assertGreater(result.first_segment_start_s, 0.4)
+            self.assertLess(result.first_segment_start_s, 1.5)
+        finally:
+            os.remove(path)
 
     def test_immediate_start_not_clipped(self):
         path = reference_wav("speech_immediate_start.wav")
