@@ -36,6 +36,15 @@ from audio_pre_buffer import (
     clamp_pre_buffer_ms,
     pre_buffer_capacity_bytes,
 )
+from overlay_ui import (
+    OverlayState,
+    PASTED_HIDE_MS,
+    StatusOverlay,
+    format_pasted_detail,
+    format_record_timer,
+    resolve_device_label,
+    tray_status_line,
+)
 from tkinter import filedialog, ttk, messagebox
 
 __version__ = "1.5.6"
@@ -223,6 +232,8 @@ except ImportError:
 
 ICON_GRAY_B64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABZUlEQVR4nO2aQU7DMBBF/3z5BhygYglk3zvkwL0D+wBL1ANwhqBsEAptQ51Jxsn32zlSZv6f2K4rD1DRxoLz99FaLNT4ZfuraiKi6CfGOy5Af9Xs33mx4xlQCIQ4DMhpV7c5U9oEbWIcJEPuHECUQdiHIMQhxCHEMYcYQYdYHx+2ceOz/dhc823bIprT6ZTtyTLy9V3X/QyapgktwmB+rOceX9zBtJ+lkxDH7q3qMN1/r7nS9oCRvkl/KSdhCaa99BDiEOIkx9/fTS6DNDfx4emIaM4fr9nvEuIkr0Dn99tf4fB8LCLmGEIcQhxCHEKc5BXIY0NaI+YYQpwUeQjZfAHawv4V5kCIQ4hDiEOIQ4hD74Bvn1+LP/OEEIcQhxCHEIcQhxAn5bxU+t3gUgWw4YL00n18gf0B/774pbegl8eHxZ95wo11lrrrtMwE0j1CJbfLrNYlVlohtrI0K5VKpVKpoBy+ARvfX7NWpnceAAAAAElFTkSuQmCC"
 ICON_RED_B64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABgklEQVR4nO3asU7DMBQF0Osrd2RipBJLF6TszEz8CQMfxMCfdGJmj8TSBamMTIwdgiJVVYhaoM5LbOf6bHEV+73X2E1lA4U2F3n8JnYsLmbiu5fVoWFxt4kSExFJN/lj13MuQHMq2X17d1rM9wlIBSGOEcZ0nQXvh327xiK46BXhVFHG5iD+HkCkIdoXQYgjxBHinEEfk765WefhMk98cD5uaPLr5RKx3W+3wTm5gPGauq4PF1VVRS1Cm3w/nnPy4gwe+0FxEuLcuVVtH/funEttDejF92d+PmTAFJK2iocQR4jzhr+/WU4DP3Tg65tbxPb+9hp8LyHOW3W0efr89fPV42USffYR4ghxhDhCnLfqyGJBmqLPPkKcj/kSkn0B1on9KwxBiCPEEeIIcYQ4Wnf4cHE1epslQhwhjhBHiCPEEeJ8yE2p7w2OVQDXbpAe249P8HzAvzd+aR3Q89fH6G2WmNnJUvM4XeAA0meEUj4uM9kpsdQKkcvULIqiKIoC6fgG3mJqG3dSmdYAAAAASUVORK5CYII="
+ICON_CYAN_B64 = "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAAGdUlEQVR4nO3dO5LbVhCGUcjl2IkXoHLo8uTyGrhgrkHKx6XQpQU48QbkRHRxQBB8gQN0/+dkGkoUyXv7m4t5DgMAAAAAAAAA0MWHtR8Aq/g+c5s9EcRi55gb+nPsj+YscH/3DP6YfdLUT2s/AJ5qieFf8n7YGGXvaX5g/525+ZeLW8KeacRi9jM93XNDf875GNg3TbgESHDP8D/y7yhDAHo5ndhHh3j63ytDEwLQx/LDP38/ItCAAHS19PHd5UBLAtDD2+l81rCe3q8qFCcAEEwAIJgA1Pc+x//z9+8yoDABgGACAMEEAIIJAAQTAAgmABBMAOp7+25l7+f/zGn9+9bgwsTAAgmABBMAHp4n8sAx/92BKCrpSPw7I8tsAoB6ON0Qpca2un7UYQGBKCX5SNg+FsTgAT3RsCxvz0r3JPfC8BVLGZvS36vvr3SkEuA3pYaWsPflIXN4bcDc8IC57kUAnsiiEsACCYAEEwAIJgAQDABgGACAMEEAIIJAAQTAAgmABBMACCYAEAwAYBgAgDBBACCCQAEEwAIJgAQTAAgmJ//9taSP0abbbP3By+CgecgchYSn7Sh55KYuYh5ooPB53bt56P9ExwMPo9rOyfdPwtg+FlC233UtWxtF4zVtZqZjicAw88ztdpfrWo2LLA4u91uicfBhu33+yXupsXstHgSP9w1/AaeB4JQfn7KP4Efbh5+g8/YnSEoPUMdPgZw13v+hY6BNPHAfij9MYHS9RpmXvzX19eTt728vJy8zUmAqeG/dv8cKTlLlU8ANw3/3Nvh2J37p+RJoHIAJl0a8vHtLgWyjdf/1v1TXdUAlKwt7ZXblxUDUO5FJkqp/VkxAMBCqgWgVF2JVWafVgvARRc+VXNyu08DZhuv/637p7pKAbi6qucWqdvi8RwL7Z8Sp4BKX7yw+AvqvT8HT/p08Obnq9IJYNatw2z4OZa6f6oE4Kr3/tcuSpfFY1lP2D+bvwzY/BHlh9kXcmpBpo50Bp9rXbt/rrh02PSM/bz2A3gWw84jUvZPlUsA4AkqBGDz11EwY9P7t0IAZqUc1dim6vuvfACA+wkABBMACCYAEEwAIJgAQDABgGACAMEEAIIJAAQTAAjW9tuBz/GbgLik+tf338IJAIIJAAQTAAgW9zGAsY+/f1r7IbCyb1+/rP0QVuMEAMEEAIIJAAQTAAgmABBMACCYAECw+K8DuOTbl8/v/n9+/PTnu/+f78XruS1OABBMACCYAEAwAYBgAgDBBACCCQAEEwAIJgAQTAAgmABAMAGAYAIAwQQAggkABBMACOYHglzgh0ksy+u5LU4AEEwAIJgAQDABgGACAMEEAIIJAASL/zqAb1+/rP0QYDVOABBMACCYAECwuI8B7Ha7tR8CbIYTAAQTAAgmABBMACCYAEAwAYBgAgDBBACCCQAEEwAIJgAQTAAgmABAMAGAYAIAwQQAggkABBMACCYAEEwAIJgAQDABgGACAMEEAIIJAAQTAAgW96vBlvTX3/+8+fMfv/3q/la8P27nRADBBACCCQAEEwAIJgAQTAAgmABAMAGAYAIAwQQAggkABBMACCYAEEwAIJgAQDABgGACAMEEAIIJAAQTAAgmABBMACCYAEAwAYBg5QOw3+/XfggEq77/KgTgw9oPAB6w6f1bIQDAk7T93YBTR7PdbrfCI6GilP3TIgD7/f7/xZm7Jjvc1nEhWcYt+6f69f8w1LkEuOo66toF6bBwLO8J+2fT1//DUCcAF9061CLAsdT90+ISYMrr6+vJ215eXt78+fjSgVxTw3zN/ulg80eUke/X/KWpxTsYL6IAMA7ALftnRonZanMJcDC3eFO3dznKcZ9bhv+a26upFoASVSVemX1aLQDAgioGoExdiVRqf1YMwDAUe5GJUW5fVg3AWZc+SuuzABwbr/+t+6e6ygE4W9tzi9Rt8XiOO/dPuff+w1D0QY9c9bUBU7z35+DBTweXnaPKJ4CDu158w8+xB/ZD2eEfhuIPfuSuk4AQ8MB7//LzU/4JjNx9OXAgCP0t9NWfLWanxZMYeTgCcEGbuenwMYCxNovDJrXaX62ezASnAZbSclY6ngCOtVw03l3bfdT2iU1wGuBW7eej/ROcIARcEjMXMU/0DDHgIHIWIp/0DEHIYe8DAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP/AVwBJH4qZCAgAAAAAElFTkSuQmCC"
+ICON_LOADING_B64 = "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"
 
 
 def get_icon_image(b64_str):
@@ -230,83 +241,10 @@ def get_icon_image(b64_str):
 
 
 # ==================================================================================
-# UI COMPONENTS
-# ==================================================================================
-
-class PartialOverlay:
-    """A high-tech, semi-transparent floating UI shown while recording."""
-
-    def __init__(self, master):
-        self.master = master
-        self.window = None
-        self.indicator = None
-        self.active = False
-        self.pulse_state = 0
-
-    def show(self):
-        if self.window:
-            return
-        self.window = tk.Toplevel(self.master)
-        self.window.overrideredirect(True)
-        self.window.attributes("-topmost", True)
-        self.window.attributes("-alpha", 0.9)
-
-        BG_COLOR = "#0b1120"
-        ACCENT_COLOR = "#00f2ff"
-
-        self.window.config(bg=ACCENT_COLOR)
-
-        screen_w = self.window.winfo_screenwidth()
-        screen_h = self.window.winfo_screenheight()
-        w, h = 220, 45
-        x = (screen_w - w) // 2
-        y = screen_h - h - 50
-        self.window.geometry(f"{w}x{h}+{x}+{y}")
-
-        inner_frame = tk.Frame(self.window, bg=BG_COLOR)
-        inner_frame.pack(fill="both", expand=True, padx=1, pady=1)
-
-        self.indicator = tk.Label(
-            inner_frame, text="●", fg="#ff004c", bg=BG_COLOR, font=("Arial", 14, "bold")
-        )
-        self.indicator.pack(side="left", padx=(15, 5))
-
-        tk.Label(
-            inner_frame,
-            text="Enregistrement...",
-            fg=ACCENT_COLOR,
-            bg=BG_COLOR,
-            font=("Segoe UI Semibold", 10),
-        ).pack(side="left", padx=(0, 15))
-
-        self.active = True
-        self._animate_pulse()
-
-    def _animate_pulse(self):
-        if not self.active or not self.window:
-            return
-        colors = ["#ff004c", "#7f1d1d", "#ff004c", "#991b1b"]
-        self.pulse_state = (self.pulse_state + 1) % len(colors)
-        try:
-            self.indicator.config(fg=colors[self.pulse_state])
-            self.window.after(500, self._animate_pulse)
-        except Exception:
-            pass
-
-    def hide(self):
-        self.active = False
-        if self.window:
-            try:
-                self.window.destroy()
-            except Exception:
-                pass
-            self.window = None
-            self.indicator = None
-
-
-# ==================================================================================
 # CONFIGURATION
 # ==================================================================================
+
+TRAY_PRE_BUFFER_CHOICES_MS = (0, 500, 1000, 2000)
 
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 DEFAULT_CONFIG = {
@@ -321,6 +259,7 @@ DEFAULT_CONFIG = {
     "check_updates": True,
     "models_dir": "",
     "log_pipeline_timings": False,
+    "beeps": False,
 }
 ALLOWED_KEYS = set(DEFAULT_CONFIG.keys())
 
@@ -513,6 +452,14 @@ def sanitize_config(data):
     else:
         cfg["log_pipeline_timings"] = bool(DEFAULT_CONFIG["log_pipeline_timings"])
 
+    beeps = cfg.get("beeps")
+    if isinstance(beeps, bool):
+        cfg["beeps"] = beeps
+    elif isinstance(beeps, str):
+        cfg["beeps"] = beeps.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        cfg["beeps"] = bool(DEFAULT_CONFIG["beeps"])
+
     models_dir = cfg.get("models_dir")
     if models_dir is None:
         cfg["models_dir"] = ""
@@ -609,6 +556,7 @@ class AudioRecorder:
         self._monitor_running = False
         self._monitor_thread = None
         self._legacy_capture = True
+        self._last_rms = 0.0
 
     def set_pre_buffer_ms(self, pre_buffer_ms):
         """Configure pre-roll duration; call before ``start_background_capture``."""
@@ -623,6 +571,18 @@ class AudioRecorder:
             and not self._legacy_capture
             and self._monitor_running
         )
+
+    def get_audio_level(self):
+        with self._lock:
+            return self._last_rms
+
+    def _update_level(self, chunk: bytes):
+        from overlay_ui import pcm16_chunk_rms
+
+        if not chunk:
+            return
+        with self._lock:
+            self._last_rms = pcm16_chunk_rms(chunk)
 
     def start_background_capture(self):
         """Keep the mic open and fill the ring buffer when pre-buffer is enabled."""
@@ -695,6 +655,7 @@ class AudioRecorder:
                     continue
                 backoff_s = 0.2
                 data = self.stream.read(self.chunk, exception_on_overflow=False)
+                self._update_level(data)
                 if self.is_recording:
                     with self._lock:
                         self.frames.append(data)
@@ -742,6 +703,7 @@ class AudioRecorder:
         while self.is_recording and self.stream:
             try:
                 data = self.stream.read(self.chunk, exception_on_overflow=False)
+                self._update_level(data)
                 with self._lock:
                     self.frames.append(data)
             except Exception:
@@ -962,11 +924,13 @@ class CyberScribeApp:
         self.auto_stop_timer = None
         self._running = True
 
-        self.overlay = PartialOverlay(self.root)
+        self.overlay = StatusOverlay(self.root)
         self.settings_window = None
 
         self.icon_gray = get_icon_image(ICON_GRAY_B64)
         self.icon_red = get_icon_image(ICON_RED_B64)
+        self.icon_cyan = get_icon_image(ICON_CYAN_B64)
+        self.icon_loading = get_icon_image(ICON_LOADING_B64)
 
         self.tray_icon = None
         self.queue = queue.Queue()
@@ -975,6 +939,11 @@ class CyberScribeApp:
         self._hotkey_capture_ui = None
         self._orphan_listeners = []
         self._last_hotkey_ts = 0.0
+        self._record_started = None
+        self._session_profile = None
+        self._escape_listener = None
+        self._tray_mode = "loading"
+        self._has_nvidia = detect_nvidia_gpu()
 
         self._update_checking = False
         self._update_downloading = False
@@ -1434,6 +1403,68 @@ class CyberScribeApp:
         # duplicate hotkey event as a second audible pulse.
         threading.Thread(target=_play, daemon=True).start()
 
+    def _playback_beep(self, freq, duration):
+        if self.config.get("beeps"):
+            self._beep(freq, duration)
+
+    def _recording_elapsed(self):
+        if not self._record_started:
+            return 0.0
+        return max(0.0, time.monotonic() - self._record_started)
+
+    def _max_record_seconds(self):
+        try:
+            return max(0, int(self.config.get("max_record_seconds")))
+        except (TypeError, ValueError):
+            return DEFAULT_CONFIG["max_record_seconds"]
+
+    def _overlay_timer_values(self):
+        return self._recording_elapsed(), self._max_record_seconds()
+
+    def _show_overlay_error(self, pill: str, detail: str):
+        self.overlay.show_state(
+            OverlayState.ERROR,
+            pill_text=pill,
+            detail_text=detail,
+            auto_hide_ms=PASTED_HIDE_MS,
+        )
+
+    def _show_listening_overlay(self):
+        pre_buffer_ms = int(self.config.get("pre_buffer_ms") or 0)
+        self.overlay.set_level_provider(self.recorder.get_audio_level)
+        self.overlay.set_timer_provider(self._overlay_timer_values)
+        elapsed = self._recording_elapsed()
+        max_s = self._max_record_seconds()
+        self.overlay.show_state(
+            OverlayState.LISTENING,
+            pill_text="● Écoute",
+            detail_text="",
+            timer_text=format_record_timer(elapsed, max_s),
+            pre_buffer_ms=pre_buffer_ms,
+        )
+
+    def _start_escape_listener(self):
+        self._stop_escape_listener()
+
+        def on_press(key):
+            try:
+                if key == keyboard.Key.esc:
+                    self.queue.put("cancel_recording")
+            except Exception:
+                pass
+
+        try:
+            self._escape_listener = keyboard.Listener(on_press=on_press)
+            self._escape_listener.start()
+        except Exception as e:
+            log_error(f"Escape listener unavailable: {e}")
+            self._escape_listener = None
+
+    def _stop_escape_listener(self):
+        listener = self._escape_listener
+        self._escape_listener = None
+        self._stop_listener(listener, timeout=0.5)
+
     def _notify(self, title, message):
         if not self.tray_icon:
             return
@@ -1448,21 +1479,20 @@ class CyberScribeApp:
             return
         if not self.recorder.start():
             self.is_recording = False
-            self.update_tray_icon(recording=False)
+            self.update_tray_icon(state="ready")
+            self._show_overlay_error("✕ Micro introuvable", "Rebranche-le, puis F8")
             self._notify("CyberScribe", "Impossible d'accéder au microphone.")
             return
 
         self.is_recording = True
-        self.update_tray_icon(recording=True)
-        self._beep(600, 200)
-        self.overlay.show()
+        self._record_started = time.monotonic()
+        self._session_profile = self.config.get("transcription_profile") or "fast"
+        self.update_tray_icon(state="recording")
+        self._playback_beep(600, 200)
+        self._start_escape_listener()
+        self._show_listening_overlay()
 
-        max_seconds = self.config.get("max_record_seconds")
-        try:
-            max_seconds = int(max_seconds)
-        except Exception:
-            max_seconds = 0
-
+        max_seconds = self._max_record_seconds()
         if max_seconds > 0:
             if self.auto_stop_timer:
                 self.auto_stop_timer.cancel()
@@ -1473,53 +1503,260 @@ class CyberScribeApp:
             self.auto_stop_timer.start()
             log(f"Auto-stop armed at {max_seconds}s.")
 
-    def stop_recording_action(self):
-        log("Action: Stop Recording")
+    def cancel_recording_action(self):
+        log("Action: Cancel Recording")
         if not self.is_recording:
             return
         self.is_recording = False
-        self.update_tray_icon(recording=False)
+        self._record_started = None
+        self._session_profile = None
+        self._stop_escape_listener()
+        self.update_tray_icon(state="ready")
 
         if self.auto_stop_timer:
             self.auto_stop_timer.cancel()
             self.auto_stop_timer = None
 
-        self.overlay.hide()
-        self._beep(400, 200)
+        self.recorder.stop()
+        self.overlay.show_state(
+            OverlayState.CANCELLED,
+            pill_text="Annulé",
+            detail_text="Rien n'a été collé",
+            auto_hide_ms=PASTED_HIDE_MS,
+        )
+
+    def stop_recording_action(self):
+        log("Action: Stop Recording")
+        if not self.is_recording:
+            return
+        self.is_recording = False
+        self._stop_escape_listener()
+        dictation_duration = self._recording_elapsed()
+        self._record_started = None
+
+        if self.auto_stop_timer:
+            self.auto_stop_timer.cancel()
+            self.auto_stop_timer = None
+
+        self._playback_beep(400, 200)
 
         t_finalize = time.perf_counter()
         audio_path = self.recorder.stop()
         audio_finalize_s = time.perf_counter() - t_finalize
+        session_profile = self._session_profile or "fast"
+        self._session_profile = None
+
+        device_label = resolve_device_label(
+            str(self.config.get("device") or "auto"),
+            self._has_nvidia,
+        )
+        model_size = str(self.config.get("model_size") or "base")
+        self.overlay.show_state(
+            OverlayState.TRANSCRIBING,
+            pill_text="Transcription…",
+            detail_text=f"■ ■ ■ {model_size} · {device_label}",
+        )
+        self.update_tray_icon(state="transcribing")
+
         if audio_path:
             log("Audio captured.")
             threading.Thread(
                 target=self.process_audio,
-                args=(audio_path, audio_finalize_s),
+                args=(audio_path, audio_finalize_s, session_profile, dictation_duration),
                 daemon=True,
             ).start()
+        else:
+            self.queue.put(("overlay_error", "✕ Erreur", "Réessaie avec F8"))
+            self.update_tray_icon(state="ready")
 
-    def update_tray_icon(self, recording=False, loading=False):
+    def _tray_state_french(self, mode: str) -> str:
+        return {
+            "loading": "Chargement",
+            "ready": "Prêt",
+            "recording": "Écoute",
+            "transcribing": "Transcription",
+        }.get(mode, "Prêt")
+
+    def _tray_status_text(self, _item):
+        profile = self.config.get("transcription_profile") or "fast"
+        device = resolve_device_label(
+            str(self.config.get("device") or "auto"),
+            self._has_nvidia,
+        )
+        model_size = str(self.config.get("model_size") or "base")
+        return tray_status_line(
+            self._tray_state_french(self._tray_mode),
+            model_size,
+            device,
+            profile,
+        )
+
+    def _sync_tray_menu(self):
         if not self.tray_icon:
             return
         try:
-            if loading:
-                self.tray_icon.icon = self.icon_gray
-                self.tray_icon.title = "CyberScribe - Chargement du modèle..."
-            elif recording:
-                self.tray_icon.icon = self.icon_red
-                self.tray_icon.title = "CyberScribe - Enregistrement..."
+            self.tray_icon.menu = self._build_tray_menu()
+            self.tray_icon.update_menu()
+        except Exception as e:
+            log_error(f"Tray menu refresh failed: {e}")
+
+    def _set_tray_profile(self, profile):
+        def _handler(icon, item):
+            self.config.set("transcription_profile", profile)
+
+            def _menu():
+                self._sync_tray_menu()
+
+            try:
+                self.root.after(0, _menu)
+            except Exception:
+                self._sync_tray_menu()
+
+        return _handler
+
+    def _set_tray_pre_buffer(self, ms):
+        def _handler(icon, item):
+            self.config.set("pre_buffer_ms", ms)
+            self.recorder.set_pre_buffer_ms(ms)
+            self.recorder.start_background_capture()
+
+            def _menu():
+                self._sync_tray_menu()
+
+            try:
+                self.root.after(0, _menu)
+            except Exception:
+                self._sync_tray_menu()
+
+        return _handler
+
+    def _toggle_tray_beeps(self, icon, item):
+        self.config.set("beeps", not bool(self.config.get("beeps")))
+        self._sync_tray_menu()
+
+    def _tray_dictate(self, icon, item):
+        self.queue.put("toggle_recording")
+
+    def open_logs_folder(self, icon, item):
+        folder = os.path.dirname(LOG_FILE)
+        try:
+            if sys.platform == "win32":
+                os.startfile(folder)
             else:
-                self.tray_icon.icon = self.icon_gray
-                self.tray_icon.title = f"CyberScribe v{__version__} - Prêt"
+                subprocess.run(["xdg-open", folder], check=False)
+        except Exception as e:
+            log_error(f"Cannot open logs folder: {e}")
+
+    def _build_tray_menu(self):
+        hotkey_label = display_hotkey(self.config.get("hotkey"))
+
+        def _profile_checked(profile):
+            return lambda item: (self.config.get("transcription_profile") or "fast") == profile
+
+        profile_menu = pystray.Menu(
+            pystray.MenuItem(
+                "Rapide",
+                self._set_tray_profile("fast"),
+                radio=True,
+                checked=_profile_checked("fast"),
+            ),
+            pystray.MenuItem(
+                "Équilibré",
+                self._set_tray_profile("balanced"),
+                radio=True,
+                checked=_profile_checked("balanced"),
+            ),
+            pystray.MenuItem(
+                "Précis",
+                self._set_tray_profile("accurate"),
+                radio=True,
+                checked=_profile_checked("accurate"),
+            ),
+        )
+
+        def _pre_buffer_checked(ms):
+            return lambda item: int(self.config.get("pre_buffer_ms") or 0) == ms
+
+        pre_buffer_items = []
+        labels = {0: "0 s", 500: "0,5 s", 1000: "1 s", 2000: "2 s"}
+        for ms in TRAY_PRE_BUFFER_CHOICES_MS:
+            pre_buffer_items.append(
+                pystray.MenuItem(
+                    labels[ms],
+                    self._set_tray_pre_buffer(ms),
+                    radio=True,
+                    checked=_pre_buffer_checked(ms),
+                )
+            )
+        pre_buffer_menu = pystray.Menu(*pre_buffer_items)
+
+        menu_items = [
+            pystray.MenuItem(self._tray_status_text, None, enabled=False),
+            pystray.MenuItem(
+                lambda item: f"Dicter ({hotkey_label})",
+                self._tray_dictate,
+                default=True,
+            ),
+            pystray.MenuItem("Profil", profile_menu),
+            pystray.MenuItem("Pré-buffer", pre_buffer_menu),
+            pystray.MenuItem(
+                "Bips de début et fin",
+                self._toggle_tray_beeps,
+                checked=lambda item: bool(self.config.get("beeps")),
+            ),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Configuration…", self.request_settings),
+            pystray.MenuItem("Ouvrir le dossier des journaux", self.open_logs_folder),
+        ]
+        if check_for_update:
+            menu_items.append(
+                pystray.MenuItem("Vérifier les mises à jour", self.request_check_updates)
+            )
+        menu_items.append(pystray.MenuItem("Quitter", self.request_quit))
+        return pystray.Menu(*menu_items)
+
+    def update_tray_icon(self, recording=False, loading=False, state=None):
+        if state is None:
+            if loading:
+                state = "loading"
+            elif recording:
+                state = "recording"
+            else:
+                state = "ready"
+        self._tray_mode = state
+        if not self.tray_icon:
+            return
+        icons = {
+            "loading": self.icon_loading,
+            "ready": self.icon_gray,
+            "recording": self.icon_red,
+            "transcribing": self.icon_cyan,
+        }
+        try:
+            self.tray_icon.icon = icons.get(state, self.icon_gray)
+            titles = {
+                "loading": "CyberScribe - Chargement du modèle...",
+                "recording": "CyberScribe - Écoute…",
+                "transcribing": "CyberScribe - Transcription…",
+                "ready": f"CyberScribe v{__version__} - Prêt",
+            }
+            self.tray_icon.title = titles.get(state, titles["ready"])
+            self._sync_tray_menu()
         except Exception as e:
             log_error(f"Error updating tray: {e}")
 
-    def process_audio(self, audio_path, audio_finalize_s=0.0):
+    def process_audio(
+        self,
+        audio_path,
+        audio_finalize_s=0.0,
+        profile=None,
+        dictation_duration_s=0.0,
+    ):
         log("Transcribing...")
         text = None
         transcribe_s = 0.0
         audio_duration_s = 0.0
-        profile = self.config.get("transcription_profile") or "fast"
+        profile = profile or self.config.get("transcription_profile") or "fast"
         try:
             from dictation_pipeline import format_timing_log, transcribe_with_model, wav_duration_seconds
 
@@ -1544,6 +1781,17 @@ class CyberScribeApp:
                     audio_duration_s = wav_duration_seconds(audio_path)
                 except Exception:
                     audio_duration_s = 0.0
+        except Exception as e:
+            log_error(f"process_audio failed: {e}")
+            self.queue.put(
+                (
+                    "overlay_error",
+                    "✕ Erreur",
+                    "Consulte les journaux, puis F8",
+                )
+            )
+            self.queue.put(("tray_state", "ready"))
+            return
         finally:
             self.recorder._safe_remove(audio_path)
 
@@ -1568,9 +1816,24 @@ class CyberScribeApp:
                         text_len=len(text),
                     )
                 )
+            self.queue.put(
+                (
+                    "overlay_pasted",
+                    len(text),
+                    max(dictation_duration_s, transcribe_s),
+                )
+            )
         else:
             log("No transcription result.")
+            self.queue.put(
+                (
+                    "overlay_error",
+                    "✕ Aucune transcription",
+                    "Vérifie le micro, puis F8",
+                )
+            )
             self._notify("CyberScribe", "Aucune transcription. Vérifiez le micro ou les logs.")
+        self.queue.put(("tray_state", "ready"))
 
     def paste_text(self, text):
         t0 = time.perf_counter()
@@ -1930,7 +2193,7 @@ class CyberScribeApp:
         return body, [("SHA256 du fichier téléchargé", verification.actual)], mode, "Installer quand même"
 
     def _show_sha_mismatch(self, verification):
-        self.update_tray_icon(loading=False)
+        self.update_tray_icon(state="ready")
         self._notify("CyberScribe", "Mise à jour refusée : somme SHA256 incorrecte.")
         hashes = []
         if verification is not None and verification.expected:
@@ -2008,7 +2271,7 @@ class CyberScribeApp:
         self._update_downloading = True
         self._update_progress = {"done": 0, "total": release.exe_size}
         self._notify("CyberScribe", f"Téléchargement de la v{release.version}…")
-        self.update_tray_icon(loading=True)
+        self.update_tray_icon(state="loading")
 
         def _work():
             try:
@@ -2041,7 +2304,7 @@ class CyberScribeApp:
         threading.Thread(target=_work, daemon=True).start()
 
     def _finish_update_download(self, staging_path, new_version, verification=None):
-        self.update_tray_icon(loading=False)
+        self.update_tray_icon(state="ready")
         if not os.path.isfile(staging_path):
             messagebox.showerror(
                 "CyberScribe",
@@ -2680,7 +2943,7 @@ class CyberScribeApp:
                 )
                 if model_changed:
                     self.transcriber.reload()
-                    self.update_tray_icon(loading=True)
+                    self.update_tray_icon(state="loading")
                     messagebox.showinfo(
                         "CyberScribe",
                         "Configuration enregistrée.\nLe modèle Whisper se recharge en arrière-plan.",
@@ -2738,17 +3001,12 @@ class CyberScribeApp:
             log_error(f"Splash error: {e}")
 
     def run_tray(self):
-        menu_items = [
-            pystray.MenuItem("Configuration", self.request_settings),
-        ]
-        if check_for_update:
-            menu_items.append(
-                pystray.MenuItem("Vérifier les mises à jour", self.request_check_updates)
-            )
-        menu_items.append(pystray.MenuItem("Quitter", self.request_quit))
-        menu = pystray.Menu(*menu_items)
+        menu = self._build_tray_menu()
         self.tray_icon = pystray.Icon(
-            "CyberScribe", self.icon_gray, f"CyberScribe v{__version__}", menu
+            "CyberScribe",
+            self.icon_loading,
+            f"CyberScribe v{__version__}",
+            menu,
         )
         self.tray_icon.run()
 
@@ -2757,7 +3015,7 @@ class CyberScribeApp:
         self.show_splash()
         tray_thread = threading.Thread(target=self.run_tray, daemon=True)
         tray_thread.start()
-        self.update_tray_icon(loading=True)
+        self.update_tray_icon(state="loading")
         while self._running:
             try:
                 try:
@@ -2769,8 +3027,8 @@ class CyberScribeApp:
                     msg = self.queue.get(timeout=0.1)
                 except queue.Empty:
                     if self.transcriber.model and not self.transcriber.loading:
-                        if not self.is_recording:
-                            self.update_tray_icon(loading=False)
+                        if not self.is_recording and self._tray_mode in ("loading",):
+                            self.update_tray_icon(state="ready")
                     if not tray_thread.is_alive():
                         break
                     continue
@@ -2778,6 +3036,9 @@ class CyberScribeApp:
                     self.open_settings_window()
                 elif msg == "toggle_recording":
                     self.toggle_recording()
+                elif msg == "cancel_recording":
+                    if self.is_recording:
+                        self.cancel_recording_action()
                 elif msg == "auto_stop_recording":
                     if self.is_recording:
                         self.stop_recording_action()
@@ -2806,8 +3067,22 @@ class CyberScribeApp:
                     elif msg[0] == "hotkey_capture_result":
                         value = msg[1] if len(msg) > 1 else None
                         self._apply_hotkey_capture_result(value)
+                    elif msg[0] == "overlay_pasted" and len(msg) > 2:
+                        _, char_count, duration_s = msg[0], msg[1], msg[2]
+                        detail = format_pasted_detail(char_count, duration_s)
+                        self.overlay.show_state(
+                            OverlayState.PASTED,
+                            pill_text="✓ Collé",
+                            detail_text=detail,
+                            timer_text="",
+                            auto_hide_ms=PASTED_HIDE_MS,
+                        )
+                    elif msg[0] == "overlay_error" and len(msg) > 2:
+                        self._show_overlay_error(msg[1], msg[2])
+                    elif msg[0] == "tray_state" and len(msg) > 1:
+                        self.update_tray_icon(state=msg[1])
                     elif msg[0] == "update_download_failed" and len(msg) > 1:
-                        self.update_tray_icon(loading=False)
+                        self.update_tray_icon(state="ready")
                         self._notify("CyberScribe", "Échec du téléchargement de la mise à jour.")
                         messagebox.showerror(
                             "CyberScribe",
@@ -2848,6 +3123,10 @@ class CyberScribeApp:
             pass
         try:
             self._stop_hotkey_listener()
+        except Exception:
+            pass
+        try:
+            self._stop_escape_listener()
         except Exception:
             pass
         try:
