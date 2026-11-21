@@ -6,35 +6,17 @@ Privacy: never log or persist transcribed text from here — only durations and 
 from __future__ import annotations
 
 import logging
-import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional
 
 import wave
 
-# Lazy import of CyberScribe pieces avoids circular imports at module load.
-_PROFILE_PRESETS = None
-_load_wav_mono_f32 = None
+from audio_wav import PROFILE_PRESETS, load_wav_mono_f32
 
 
 def _log_wav_load_failure(exc: BaseException) -> None:
-    try:
-        import CyberScribe as cs
-
-        cs.log_error(f"load_wav_mono_f32 failed ({type(exc).__name__}): {exc}")
-    except Exception:
-        logging.error(f"load_wav_mono_f32 failed ({type(exc).__name__}): {exc}")
-
-
-def _cyber():
-    global _PROFILE_PRESETS, _load_wav_mono_f32
-    if _PROFILE_PRESETS is None:
-        import CyberScribe as cs
-
-        _PROFILE_PRESETS = cs.PROFILE_PRESETS
-        _load_wav_mono_f32 = cs.load_wav_mono_f32
-    return _PROFILE_PRESETS, _load_wav_mono_f32
+    logging.error(f"load_wav_mono_f32 failed ({type(exc).__name__}): {exc}")
 
 
 @dataclass
@@ -70,8 +52,7 @@ def wav_duration_seconds(path: str) -> float:
 
 
 def transcribe_kwargs_for_profile(profile: str, language: Optional[str]) -> Dict[str, Any]:
-    presets, _ = _cyber()
-    preset = presets.get(profile, presets["fast"])
+    preset = PROFILE_PRESETS.get(profile, PROFILE_PRESETS["fast"])
     lang = None if (language or "").lower() == "auto" else language
     return {
         "beam_size": preset["beam_size"],
@@ -93,11 +74,10 @@ def transcribe_with_model(
     language: str = "fr",
 ) -> TranscribeResult:
     """Run faster-whisper on a 16 kHz mono PCM16 WAV path."""
-    _, load_wav = _cyber()
     timings = PipelineTimings()
     t0 = time.perf_counter()
     try:
-        audio_input = load_wav(audio_path)
+        audio_input = load_wav_mono_f32(audio_path)
     except Exception as e:
         _log_wav_load_failure(e)
         raise

@@ -10,7 +10,7 @@
 #    python CyberScribe.py
 #
 # 3. COMPILATION EN .EXE (Mode Autonome)
-#    pyinstaller --noconsole --onefile --noconfirm --icon="app.ico" --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "<venv>/Lib/site-packages/faster_whisper/assets;faster_whisper/assets" --name "CyberScribe" CyberScribe.py
+#    pyinstaller --noconsole --onefile --noconfirm --icon="app.ico" --hidden-import=audio_wav --hidden-import=pyaudio --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse._win32 --add-data "<venv>/Lib/site-packages/faster_whisper/assets;faster_whisper/assets" --name "CyberScribe" CyberScribe.py
 #
 # ==================================================================================
 """
@@ -46,6 +46,8 @@ from overlay_ui import (
     tray_status_line,
 )
 from tkinter import filedialog, ttk, messagebox
+
+from audio_wav import PROFILE_PRESETS, load_wav_mono_f32, normalize_pcm16_mono_bytes
 
 __version__ = "1.5.6"
 APP_MUTEX_NAME = "Global\\CyberScribeSingleInstance"
@@ -97,15 +99,6 @@ def _rotate_log():
         pass
 
 
-_rotate_log()
-
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.DEBUG,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-
-
 def _cleanup_orphan_temp_wav():
     """Remove leftover CyberScribe wav files from previous runs."""
     try:
@@ -119,7 +112,15 @@ def _cleanup_orphan_temp_wav():
         pass
 
 
-_cleanup_orphan_temp_wav()
+def bootstrap_runtime():
+    """One-time app startup (logging, log rotation, orphan temp WAV cleanup)."""
+    _rotate_log()
+    logging.basicConfig(
+        filename=LOG_FILE,
+        level=logging.DEBUG,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+    _cleanup_orphan_temp_wav()
 
 
 def log(msg):
@@ -262,36 +263,6 @@ DEFAULT_CONFIG = {
     "beeps": False,
 }
 ALLOWED_KEYS = set(DEFAULT_CONFIG.keys())
-
-PROFILE_PRESETS = {
-    "fast": {
-        "beam_size": 1,
-        "best_of": 1,
-        "vad_filter": True,
-        "vad_parameters": {"min_silence_duration_ms": 250},
-        "condition_on_previous_text": False,
-        "no_speech_threshold": 0.7,
-        "log_prob_threshold": -2.0,
-    },
-    "balanced": {
-        "beam_size": 3,
-        "best_of": 2,
-        "vad_filter": True,
-        "vad_parameters": {"min_silence_duration_ms": 400},
-        "condition_on_previous_text": False,
-        "no_speech_threshold": 0.75,
-        "log_prob_threshold": -1.5,
-    },
-    "accurate": {
-        "beam_size": 5,
-        "best_of": 3,
-        "vad_filter": True,
-        "vad_parameters": {"min_silence_duration_ms": 500},
-        "condition_on_previous_text": False,
-        "no_speech_threshold": 0.8,
-        "log_prob_threshold": -1.0,
-    },
-}
 
 HOTKEY_MODIFIERS = {
     "ctrl": "<ctrl>",
@@ -728,12 +699,6 @@ class AudioRecorder:
                 wf.setsampwidth(self.audio.get_sample_size(self.format))
                 wf.setframerate(self.rate)
                 wf.writeframes(pcm)
-            try:
-                with open(path, "rb") as handle:
-                    handle.flush()
-                    os.fsync(handle.fileno())
-            except Exception as e:
-                log_error(f"WAV fsync failed ({type(e).__name__}): {e}")
             return path
         except Exception as e:
             log_error(f"Error saving wav: {e}")
@@ -786,41 +751,6 @@ class AudioRecorder:
 # ==================================================================================
 # WHISPER TRANSCRIBER
 # ==================================================================================
-
-def normalize_pcm16_mono_bytes(raw: bytes) -> bytes:
-    """Drop a trailing byte so PCM16 mono frame data is an even length."""
-    if not raw:
-        return b""
-    if len(raw) % 2:
-        return raw[:-1]
-    return raw
-
-
-def load_wav_mono_f32(path, expected_rate=16000):
-    """Load a PCM WAV as float32 mono for faster-whisper (avoids PyAV decode).
-
-    Our recorder always writes 16 kHz mono int16; this path bypasses
-    ``faster_whisper.audio.decode_audio`` / ``av.open(..., metadata_errors=...)``,
-    which breaks on PyAV 19 + faster-whisper 1.2.1.
-    """
-    import numpy as np
-
-    with wave.open(path, "rb") as wf:
-        channels = wf.getnchannels()
-        rate = wf.getframerate()
-        sampwidth = wf.getsampwidth()
-        frames = normalize_pcm16_mono_bytes(wf.readframes(wf.getnframes()))
-
-    if sampwidth != 2:
-        raise ValueError(f"Unsupported sample width: {sampwidth} (need 16-bit PCM)")
-    if rate != expected_rate:
-        raise ValueError(f"Unexpected sample rate: {rate} (need {expected_rate})")
-
-    audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-    if channels > 1:
-        audio = audio.reshape(-1, channels).mean(axis=1)
-    return audio
-
 
 class Transcriber:
     def __init__(self, config):
@@ -3202,6 +3132,7 @@ class CyberScribeApp:
 
 
 if __name__ == "__main__":
+    bootstrap_runtime()
     instance_handle = _acquire_single_instance()
     if instance_handle is None:
         _message_box(
