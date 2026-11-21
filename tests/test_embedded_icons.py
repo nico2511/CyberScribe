@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import os
 import re
+import sys
 import unittest
 from io import BytesIO
 
-from PIL import Image
+
+def _ensure_real_pillow_image():
+    """Avoid broken PIL stubs left in sys.modules by other tests."""
+    mod = sys.modules.get("PIL.Image")
+    if mod is None or not callable(getattr(mod, "open", None)):
+        for name in list(sys.modules):
+            if name == "PIL" or name.startswith("PIL."):
+                del sys.modules[name]
+        return importlib.import_module("PIL.Image")
+    return mod
+
+
+Image = _ensure_real_pillow_image()
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CYBER_PATH = os.path.join(ROOT, "CyberScribe.py")
@@ -40,7 +54,13 @@ def _get_icon_image(b64_str: str) -> Image.Image:
 class EmbeddedTrayIconsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        global Image
+        Image = _ensure_real_pillow_image()
         cls.icons = _load_icon_constants()
+
+    def setUp(self):
+        global Image
+        Image = _ensure_real_pillow_image()
 
     def test_each_icon_decodes_with_valid_padding(self):
         for role, blob in self.icons.items():

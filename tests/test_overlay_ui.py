@@ -19,6 +19,7 @@ from overlay_ui import (  # noqa: E402
     overlay_state_for_recording,
     pcm16_chunk_rms,
     pre_buffer_bar_count,
+    recording_display_tick,
     vu_meter_bar_levels,
 )
 
@@ -54,6 +55,12 @@ class OverlayStateMachineTest(unittest.TestCase):
     def test_listening_vs_ending(self):
         self.assertEqual(overlay_state_for_recording(5, 25), OverlayState.LISTENING)
         self.assertEqual(overlay_state_for_recording(23, 25), OverlayState.ENDING_SOON)
+
+    def test_recording_tick_updates_timer_not_only_on_state_change(self):
+        tick_a = recording_display_tick(3.0, 25)
+        tick_b = recording_display_tick(4.0, 25)
+        self.assertEqual(tick_a.state, tick_b.state)
+        self.assertNotEqual(tick_a.timer_text, tick_b.timer_text)
 
 
 class SanitizeBeepsTest(unittest.TestCase):

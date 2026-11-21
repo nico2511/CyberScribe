@@ -9,18 +9,21 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
+from overlay_placement import OVERLAY_BOTTOM_MARGIN_PX, WorkArea, compute_overlay_xy, query_primary_work_area
+
 if TYPE_CHECKING:
     import tkinter as tk
 
-# Visual constants (match existing CyberScribe palette)
 BG_DARK = "#0b1120"
 ACCENT_CYAN = "#00f2ff"
 CYAN_DIM = "#0e7490"
 CYAN_BRIGHT = "#00f2ff"
+LISTEN_RED = "#e11d48"
 OVERLAY_W = 400
 OVERLAY_H = 38
+PILL_W = 132
 BAR_COUNT = 48
-VU_REFRESH_MS = 40  # ~25 Hz
+VU_REFRESH_MS = 40
 ENDING_SOON_SECONDS = 3
 PASTED_HIDE_MS = 1500
 
@@ -50,7 +53,7 @@ class OverlayPalette:
 
 
 STATE_PALETTE = {
-    OverlayState.LISTENING: OverlayPalette(ACCENT_CYAN, "#db2777", "#ffffff", ACCENT_CYAN),
+    OverlayState.LISTENING: OverlayPalette(ACCENT_CYAN, LISTEN_RED, "#ffffff", ACCENT_CYAN),
     OverlayState.ENDING_SOON: OverlayPalette("#f59e0b", "#f59e0b", "#111827", "#fbbf24"),
     OverlayState.TRANSCRIBING: OverlayPalette(ACCENT_CYAN, ACCENT_CYAN, "#0b1120", "#94a3b8"),
     OverlayState.PASTED: OverlayPalette("#22c55e", "#22c55e", "#0b1120", "#bbf7d0"),
@@ -59,8 +62,15 @@ STATE_PALETTE = {
 }
 
 
+@dataclass(frozen=True)
+class RecordingDisplayTick:
+    state: OverlayState
+    pill_text: str
+    timer_text: str
+    progress_frac: float
+
+
 def format_record_timer(elapsed_s: float, max_s: int) -> str:
-    """Chrono label, e.g. ``0:07 / 0:25`` (Consolas in UI)."""
     elapsed_s = max(0.0, float(elapsed_s))
     max_s = max(0, int(max_s))
 
@@ -74,7 +84,6 @@ def format_record_timer(elapsed_s: float, max_s: int) -> str:
 
 
 def format_pasted_detail(char_count: int, dictation_s: float) -> str:
-    """Success detail without transcribed content."""
     char_count = max(0, int(char_count))
     dictation_s = max(0.0, float(dictation_s))
     if dictation_s < 10:
@@ -85,7 +94,6 @@ def format_pasted_detail(char_count: int, dictation_s: float) -> str:
 
 
 def ending_soon_remaining(elapsed_s: float, max_s: int, threshold: int = ENDING_SOON_SECONDS) -> Optional[int]:
-    """Seconds until auto-stop, or None if not in the ending-soon window."""
     if max_s <= 0:
         return None
     remaining = max_s - elapsed_s
@@ -100,8 +108,27 @@ def overlay_state_for_recording(elapsed_s: float, max_s: int) -> OverlayState:
     return OverlayState.LISTENING
 
 
+def recording_display_tick(
+    elapsed_s: float,
+    max_s: int,
+    *,
+    _current: Optional[OverlayState] = None,
+) -> RecordingDisplayTick:
+    """Pure update for chrono / pill / progress during listening (each vu tick)."""
+    del _current
+    remaining = ending_soon_remaining(elapsed_s, max_s)
+    if remaining:
+        state = OverlayState.ENDING_SOON
+        pill = f"● Fin dans {remaining} s"
+    else:
+        state = OverlayState.LISTENING
+        pill = "● Écoute"
+    timer = format_record_timer(elapsed_s, max_s)
+    frac = min(1.0, elapsed_s / max_s) if max_s > 0 else 0.0
+    return RecordingDisplayTick(state, pill, timer, frac)
+
+
 def pcm16_chunk_rms(chunk: bytes) -> float:
-    """RMS level in 0..1 from mono PCM16 bytes."""
     if not chunk or len(chunk) < 2:
         return 0.0
     n = len(chunk) // 2
@@ -120,7 +147,6 @@ def vu_meter_bar_levels(
     *,
     pre_buffer_bars: int,
 ) -> Tuple[List[float], int]:
-    """Return bar heights and the index of the F8 separator (or -1)."""
     pre_buffer_bars = max(0, int(pre_buffer_bars))
     if pre_buffer_bars <= 0:
         return list(history)[-BAR_COUNT:], -1
@@ -147,14 +173,21 @@ def resolve_device_label(device_config: str, cuda_available: bool) -> str:
     return "CUDA" if cuda_available else "CPU"
 
 
-def tray_status_line(
-    state: str,
-    model_size: str,
-    device: str,
-    profile: str,
-) -> str:
+def tray_status_line(state: str, model_size: str, device: str, profile: str) -> str:
     profile_short = profile if profile in ("fast", "balanced", "accurate") else "fast"
     return f"{state} · {model_size} · {device} · {profile_short}"
+
+
+def overlay_geometry_for_master(master, overlay_w: int = OVERLAY_W, overlay_h: int = OVERLAY_H) -> Tuple[int, int, int, int]:
+    """Return ``width x height + x + y`` using work area when possible."""
+    margin = OVERLAY_BOTTOM_MARGIN_PX
+    work = query_primary_work_area()
+    if work is None:
+        sw = int(master.winfo_screenwidth())
+        sh = int(master.winfo_screenheight())
+        work = WorkArea(0, 0, sw, sh)
+    x, y = compute_overlay_xy(work, overlay_w=overlay_w, overlay_h=overlay_h, margin=margin)
+    return overlay_w, overlay_h, x, y
 
 
 class StatusOverlay:
@@ -166,8 +199,10 @@ class StatusOverlay:
         self._tk = tk
         self.master = master
         self.window = None
-        self._outer = None
+        self._inner = None
         self._pill = None
+        self._body = None
+        self._vu_row = None
         self._detail = None
         self._timer = None
         self._canvas = None
@@ -182,11 +217,9 @@ class StatusOverlay:
         self._lock = threading.Lock()
 
     def set_level_provider(self, provider):
-        """Callable returning current RMS 0..1 (may be invoked from worker threads)."""
         self._level_provider = provider
 
     def set_timer_provider(self, provider):
-        """Callable returning (elapsed_s, max_s) for the chrono."""
         self._timer_provider = provider
 
     def _ensure_window(self):
@@ -196,41 +229,49 @@ class StatusOverlay:
         self.window = tk.Toplevel(self.master)
         self.window.overrideredirect(True)
         self.window.attributes("-topmost", True)
-        self.window.attributes("-alpha", 0.92)
+        self.window.attributes("-alpha", 0.95)
 
-        screen_w = self.window.winfo_screenwidth()
-        screen_h = self.window.winfo_screenheight()
-        x = (screen_w - OVERLAY_W) // 2
-        y = screen_h - OVERLAY_H - 48
-        self.window.geometry(f"{OVERLAY_W}x{OVERLAY_H}+{x}+{y}")
+        ow, oh, x, y = overlay_geometry_for_master(self.master)
+        self.window.geometry(f"{ow}x{oh}+{x}+{y}")
 
-        self._outer = tk.Frame(self.window, bg=BG_DARK)
-        self._outer.pack(fill="both", expand=True)
+        self._inner = tk.Frame(self.window, bg=BG_DARK)
+        self._inner.pack(fill="both", expand=True, padx=1, pady=1)
 
         self._pill = tk.Label(
-            self._outer,
+            self._inner,
             text="",
             font=("Segoe UI Semibold", 10),
-            width=18,
+            width=16,
             anchor="w",
-            padx=10,
+            padx=8,
         )
         self._pill.pack(side="left", fill="y")
 
-        right = tk.Frame(self._outer, bg=BG_DARK)
-        right.pack(side="left", fill="both", expand=True)
+        self._body = tk.Frame(self._inner, bg=BG_DARK)
+        self._body.pack(side="left", fill="both", expand=True, padx=(4, 6), pady=2)
 
-        self._canvas = tk.Canvas(right, height=22, bg=BG_DARK, highlightthickness=0)
-        self._canvas.pack(fill="x", padx=(0, 8), pady=(4, 0))
-
-        self._progress = tk.Canvas(right, height=3, bg=BG_DARK, highlightthickness=0)
-
-        bottom = tk.Frame(right, bg=BG_DARK)
-        bottom.pack(fill="x", padx=(0, 10), pady=(0, 4))
-        self._detail = tk.Label(bottom, text="", font=("Segoe UI", 9), bg=BG_DARK, anchor="w")
-        self._detail.pack(side="left", fill="x", expand=True)
-        self._timer = tk.Label(bottom, text="", font=("Consolas", 9), bg=BG_DARK, anchor="e")
+        self._vu_row = tk.Frame(self._body, bg=BG_DARK)
+        self._canvas = tk.Canvas(self._vu_row, height=20, bg=BG_DARK, highlightthickness=0)
+        self._canvas.pack(side="left", fill="both", expand=True)
+        self._timer = tk.Label(
+            self._vu_row,
+            text="",
+            font=("Consolas", 10),
+            bg=BG_DARK,
+            anchor="e",
+            padx=(6, 0),
+        )
         self._timer.pack(side="right")
+
+        self._progress = tk.Canvas(self._body, height=2, bg=BG_DARK, highlightthickness=0)
+
+        self._detail = tk.Label(
+            self._body,
+            text="",
+            font=("Segoe UI", 9),
+            bg=BG_DARK,
+            anchor="w",
+        )
 
     def _cancel_timers(self):
         for attr in ("_hide_after_id", "_tick_after_id"):
@@ -247,14 +288,28 @@ class StatusOverlay:
         if not pal or not self.window:
             return
         self.window.config(bg=pal.border)
-        if self._outer:
-            self._outer.config(bg=BG_DARK)
+        if self._inner:
+            self._inner.config(bg=BG_DARK)
         if self._pill:
             self._pill.config(bg=pal.pill_bg, fg=pal.pill_fg)
         if self._detail:
             self._detail.config(fg=pal.detail_fg, bg=BG_DARK)
         if self._timer:
             self._timer.config(fg=pal.detail_fg, bg=BG_DARK)
+
+    def _show_recording_layout(self):
+        if self._detail:
+            self._detail.pack_forget()
+        if self._vu_row:
+            self._vu_row.pack(fill="both", expand=True)
+
+    def _show_detail_layout(self):
+        if self._vu_row:
+            self._vu_row.pack_forget()
+        if self._progress:
+            self._progress.pack_forget()
+        if self._detail:
+            self._detail.pack(fill="both", expand=True)
 
     def show_state(
         self,
@@ -278,28 +333,22 @@ class StatusOverlay:
 
         if self._pill:
             self._pill.config(text=pill_text)
-        if self._detail:
-            self._detail.config(text=detail_text)
-        if self._timer:
-            self._timer.config(text=timer_text)
 
         show_vu = state in (OverlayState.LISTENING, OverlayState.ENDING_SOON)
-        if self._canvas:
-            if show_vu:
-                self._canvas.pack(fill="x", padx=(0, 8), pady=(4, 0))
-            else:
-                self._canvas.pack_forget()
-
-        if self._progress:
-            if state == OverlayState.ENDING_SOON:
-                self._progress.pack(fill="x", padx=(0, 8))
-            else:
-                self._progress.pack_forget()
-
         if show_vu:
+            self._show_recording_layout()
+            if self._timer:
+                self._timer.config(text=timer_text)
+            if state == OverlayState.ENDING_SOON and self._progress:
+                self._progress.pack(fill="x", pady=(0, 0))
+            elif self._progress:
+                self._progress.pack_forget()
             self._start_vu_tick()
         else:
             self._stop_vu_tick()
+            self._show_detail_layout()
+            if self._detail:
+                self._detail.config(text=detail_text)
             if self._canvas:
                 self._canvas.delete("all")
 
@@ -317,8 +366,10 @@ class StatusOverlay:
             except Exception:
                 pass
         self.window = None
-        self._outer = None
+        self._inner = None
         self._pill = None
+        self._body = None
+        self._vu_row = None
         self._detail = None
         self._timer = None
         self._canvas = None
@@ -340,6 +391,7 @@ class StatusOverlay:
     def _vu_tick(self):
         if self._state not in (OverlayState.LISTENING, OverlayState.ENDING_SOON):
             return
+
         level = 0.0
         if self._level_provider:
             try:
@@ -359,28 +411,25 @@ class StatusOverlay:
             except Exception:
                 pass
 
-        remaining = ending_soon_remaining(elapsed_s, max_s)
-        new_state = OverlayState.ENDING_SOON if remaining else OverlayState.LISTENING
-        if new_state != self._state:
-            self._state = new_state
-            self._apply_palette(new_state)
-            if new_state == OverlayState.ENDING_SOON and self._pill and remaining:
-                self._pill.config(text=f"● Fin dans {remaining} s")
-            elif self._pill:
-                self._pill.config(text="● Écoute")
-            if self._progress:
-                if new_state == OverlayState.ENDING_SOON:
-                    self._progress.pack(fill="x", padx=(0, 8))
-                else:
-                    self._progress.pack_forget()
-            if self._timer_provider and self._timer:
-                self._timer.config(text=format_record_timer(elapsed_s, max_s))
+        tick = recording_display_tick(elapsed_s, max_s)
+        if tick.state != self._state:
+            self._state = tick.state
+            self._apply_palette(tick.state)
+            if tick.state == OverlayState.ENDING_SOON and self._progress:
+                self._progress.pack(fill="x", pady=(0, 0))
+            elif self._progress:
+                self._progress.pack_forget()
 
-        self._draw_vu_meter()
+        if self._pill:
+            self._pill.config(text=tick.pill_text)
+        if self._timer:
+            self._timer.config(text=tick.timer_text)
+
+        self._draw_vu_meter(tick.progress_frac)
         if self.window:
             self._tick_after_id = self.window.after(VU_REFRESH_MS, self._vu_tick)
 
-    def _draw_vu_meter(self):
+    def _draw_vu_meter(self, progress_frac: float = 0.0):
         if not self._canvas:
             return
         c = self._canvas
@@ -391,8 +440,7 @@ class StatusOverlay:
             bars, split = vu_meter_bar_levels(self._vu_history, pre_buffer_bars=self._pre_buffer_bars)
         bar_w = max(2, w // BAR_COUNT)
         gap = 1
-        pal = STATE_PALETTE.get(self._state, STATE_PALETTE[OverlayState.LISTENING])
-        bright = pal.detail_fg if self._state == OverlayState.ENDING_SOON else CYAN_BRIGHT
+        bright = "#fbbf24" if self._state == OverlayState.ENDING_SOON else CYAN_BRIGHT
         dim = "#b45309" if self._state == OverlayState.ENDING_SOON else CYAN_DIM
 
         for i, level in enumerate(bars):
@@ -406,16 +454,17 @@ class StatusOverlay:
             sx = split * bar_w
             c.create_line(sx, 0, sx, h, fill="#ffffff", width=1)
 
-        if self._state == OverlayState.ENDING_SOON and self._progress and self._timer_provider:
-            try:
-                elapsed_s, max_s = self._timer_provider()
-                frac = min(1.0, elapsed_s / max_s) if max_s > 0 else 0
-            except Exception:
-                frac = 0
+        if self._state == OverlayState.ENDING_SOON and self._progress:
             pw = max(10, self._progress.winfo_width())
             self._progress.delete("all")
-            self._progress.create_rectangle(0, 0, int(pw * frac), 3, fill="#f59e0b", outline="")
+            self._progress.create_rectangle(
+                0,
+                0,
+                int(pw * min(1.0, progress_frac)),
+                2,
+                fill="#f59e0b",
+                outline="",
+            )
 
 
-# Backward-compatible alias during migration
 PartialOverlay = StatusOverlay
