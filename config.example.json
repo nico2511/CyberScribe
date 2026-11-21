@@ -9,5 +9,6 @@
     "pre_buffer_ms": 1000,
     "check_updates": true,
     "models_dir": "%LOCALAPPDATA%\\CyberScribe\\models",
-    "log_pipeline_timings": false
+    "log_pipeline_timings": false,
+    "beeps": false
 }
